@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from tqdm import tqdm
 
 ### GET ALL COURSES URLS ###
-def getAllCoursesUrl():
+def get_all_courses_url():
     URL_ROOT = 'https://edu.epfl.ch/'
     shs = ['https://edu.epfl.ch/studyplan/fr/bachelor/programme-sciences-humaines-et-sociales/', 'https://edu.epfl.ch/studyplan/fr/master/programme-sciences-humaines-et-sociales/']
     page = requests.get(URL_ROOT)
@@ -41,15 +41,18 @@ def getAllCoursesUrl():
                 if course_name not in courses_names:
                     courses_url.append(course_url)
                     courses_names.append(course_name)
-                
+    
+    # Filter duplicates
+    courses_url = list(set(courses_url))
+
     return courses_url
 
 ### PARSE COURSE ###
-def parseCourse(url):
+def parse_course(url):
     page = requests.get(url)
     if (page.status_code == 404):
-        print(url)
-        return
+        print(f'404: {url}')
+        return None
         
     soup = BeautifulSoup(page.content, "html.parser")
     
@@ -59,33 +62,584 @@ def parseCourse(url):
     code = soup.find('div', class_="course-summary").findAll('p')[0].text.split('/')[0].strip()
     credits = int(re.findall(r'\d+', soup.find('div', class_="course-summary").findAll('p')[0].text.split('/')[1])[0])
     teachers = [(x.text, x.get('href')) for x in soup.find('div', class_="course-summary").findAll('p')[1].findAll('a')]
-
-    semester = soup.find('div', class_="study-plans").findAll('div', class_="collapse-item")[0].findAll('li')[0].text.split(':')[1].strip()
-
-    if (semester != 'Printemps' and semester != 'Automne'):
-        semester = None
-        schedule = parseScheduleEcoleDoctorale(soup)
-        if schedule != None:
-            semester = 'ecole_doctorale'
-        #if schedule == None:
-            #print(f'\033[91m NO SCHEDULE ({url}) \033[0m')
+    language = soup.find('div', class_="course-summary").findAll('p')
+    if len(language) > 2:
+        language = language[2].text.split(':')
+        if len(language) > 1:
+            language = language[1].strip()
+        else:
+            language = None
     else:
-        schedule = parseSchedule(soup)
+        language = None
+
+    studyplans_elements = soup.find('div', class_="study-plans").findAll('button', class_="collapse-title-desktop")
+
+    # studyplans_elements are buttons with section name before the xxxx-xxxx years and the semester after
+    re_pattern = r'(\d{4}-\d{4})'
+
+    studyplans = []
+    for studyplan_element in studyplans_elements:
+        studyplan = {}
+        parts = re.split(re_pattern, studyplan_element.text)
+        studyplan['section'] = parts[0].strip().replace("\n", " ")
+        studyplan['semester'] = parts[1] + ' ' + parts[2].strip()
+        studyplans.append(studyplan) 
     
     course = {
         'name': title,
         'code': code,
         'credits': credits,
-        'semester': semester,
+        'studyplans': studyplans,
         'teachers': teachers,
-        'schedule': schedule,
-        'edu_url': url
+        'edu_url': url,
+        'language': language,
     }
 
     return course
 
+### PARSE ALL COURSES ###
+def parse_all_courses():
+    URL_ROOT = 'https://edu.epfl.ch'
+    print('Getting all courses urls...')
+    courses_url = get_all_courses_url()
+    print(f'- {len(courses_url)} courses urls found')
+    courses = []
+    print('Parsing courses...')
+    for url in tqdm(courses_url, total=len(courses_url)):
+        course = parse_course(URL_ROOT + url)
+        if course != None:
+            courses.append(course)
+    print(f'- {len(courses)} courses parsed')
+    return courses
+
+### FILTER DUPLICATES COURSES ###
+def filter_duplicates_courses(courses):
+    '''
+        Filter duplicates courses
+        Input:
+            - courses: a list of courses
+        Output:
+            - filtered_courses: a list of courses without duplicates
+    '''
+    filtered_courses = []
+    course_codes = set()
+    for course in courses:
+        course_code = course.get("code")
+
+        if (course_code not in course_codes):
+            course_codes.add(course_code)
+            filtered_courses.append(course)
+    return filtered_courses
+
+### CREATE COURSES ###
+def create_courses(db, courses):
+    '''
+        Create courses in the db
+        Input:
+            - courses: a list of courses to create
+        Output:
+            - None
+    '''
+    print('Getting courses from DB...')
+    db_courses_codes = [course.get('code') for course in db.courses.find()]
+    print(f'- {len(db_courses_codes)} courses found in DB')
+    
+    print('Filtering courses...')
+    new_courses = []
+    for course in tqdm(courses, total=len(courses)):
+        if (course.get("code") in db_courses_codes):
+            continue
+        new_course = {
+            "code": course.get("code"),
+            "name": course.get("name"),
+            "credits": course.get("credits"),
+            "edu_url": course.get("edu_url"),
+            "available": True
+        }
+        if (course.get("language") != None):
+            new_course["language"] = course.get("language")
+
+        new_courses.append(new_course)
+
+    print('Creating courses...')
+    if (len(new_courses) == 0):
+        print('- No new courses to create')
+        return
+    
+    try:
+        db.courses.insert_many(new_courses)
+        print(f'- {len(new_courses)} courses created')
+    except Exception as e:
+        print(e)
+
+    return
+
+
+### CREATE TEACHERS ###
+def create_teachers(db, courses):
+    '''
+        Create teachers in the db
+        Input:
+            - courses: a list of courses to create
+        Output:
+            - None
+    '''
+
+    print('Getting teachers from DB...')
+    db_teachers = list(db.teachers.find({
+        "available": True
+    }))
+    print(f'- {len(db_teachers)} teachers found')
+
+    print('Filtering teachers...')
+    new_teachers = []
+    for course in tqdm(courses, total=len(courses)):
+        for teacher in course.get('teachers'):
+            found = False
+            for db_teacher in db_teachers:
+                if (db_teacher.get("people_url") == teacher[1]):
+                    found = True
+                    break
+                
+            if (found == True):
+                continue
+
+            for new_teacher in new_teachers:
+                if (new_teacher.get("people_url") == teacher[1]):
+                    found = True
+                    break
+
+            if (found == True):
+                continue
+
+            new_teachers.append({
+                "name": teacher[0],
+                "people_url": teacher[1],
+                "available": True
+            })
+
+    print('Creating new teachers...')
+    if (len(new_teachers) == 0):
+        print('- No new teachers')
+        return
+    
+    try:
+        db.teachers.insert_many(new_teachers)
+        print(f'- {len(new_teachers)} teachers created')
+    except Exception as e:
+        print(e)
+
+    return
+
+### ADD TEACHERS TO COURSES ###
+def add_teachers_to_courses(db, courses):
+    '''
+        Add teachers to courses in the db
+        Input:
+            - courses: a list of courses to update
+        Output:
+            - None
+    '''
+    db_courses = list(db.courses.find({
+        "available": True
+    }))
+    print('Getting teachers from DB...')
+    db_teachers = list(db.teachers.find({
+        "available": True
+    }))
+    print(f'- {len(db_teachers)} teachers found')
+    
+    print('Adding teachers to courses...')
+    for course in tqdm(courses, total=len(courses)):
+        db_course = None
+        for db_course_ in db_courses:
+            if (db_course_.get("code") == course.get("code")):
+                db_course = db_course_
+                break
+        
+        if (db_course == None):
+            continue
+
+        course_teachers_ids = []
+
+        for teacher in course.get('teachers'):
+            found = False
+            for db_teacher in db_teachers:
+                if (db_teacher.get("people_url") == teacher[1]):
+                    found = True
+                    break
+                
+            if (found == True):
+                course_teachers_ids.append(db_teacher.get("_id"))
+                continue
+
+        db.courses.update_one({
+            "_id": db_course.get("_id")
+        }, {
+            "$set": {
+                "teachers": course_teachers_ids
+            }
+        })
+
+    return
+
+### CREATE NEW SEMESTER ###
+def create_new_semester(db, **kwargs):
+    name = kwargs.get("name") or None
+    start_date = kwargs.get("start_date") or None
+    end_date = kwargs.get("end_date") or None
+    type = kwargs.get("type") or None
+    available = kwargs.get("available") or False
+    skip_dates = kwargs.get("skip_dates") or []
+    
+    try:
+        db.semesters.insert_one({
+            "name": name,
+            "start_date": start_date,
+            "end_date": end_date,
+            "type": type,
+            "available": available,
+            "skip_dates": skip_dates
+       })
+    except Exception as e:
+        print(e)
+
+
+def list_units(courses):
+    units = []
+    unique_sections = set()
+    unique_promos = set()
+    for courses in courses:
+        for studyplan in courses['studyplans']:
+            if (studyplan['section'] not in unique_sections):
+                unique_sections.add(studyplan['section'])
+            if (studyplan['semester'] not in unique_promos):
+                unique_promos.add(studyplan['semester'])
+            if (studyplan['section'], studyplan['semester']) not in units:
+                units.append((studyplan['section'], studyplan['semester']))
+    
+    return units
+
+def create_units(db, courses):
+
+    units = list_units(courses)
+
+    print('Getting units from DB...')
+    db_units = list(db.units.find())
+    print(f'- {len(db_units)} units found')
+    db_units_names = [unit.get('name') for unit in db_units]
+
+    semester_re_pattern = r'(\d{4}-\d{4})'
+
+    new_units = []
+    new_units_names = set()
+    print('Filtering units...')
+    for unit in tqdm(units):
+        semester_long = re.split(semester_re_pattern, unit[1])[2].strip()
+        unit_name = unit[0] + ' - ' + semester_long if semester_long in MAP_PROMOS_LONG else unit[0]
+        if (unit_name not in db_units_names and unit_name not in new_units_names):
+
+            new_unit = dict()
+            promo = MAP_PROMOS_LONG[semester_long] if semester_long in MAP_PROMOS_LONG else None
+            if (promo != None):
+                new_unit['promo'] = promo
+            code = MAP_SECTIONS[unit[0]] + '-' + promo if promo != None else MAP_SECTIONS[unit[0]]
+            new_unit['code'] = code
+            new_unit['section'] = MAP_SECTIONS[unit[0]]
+            new_unit['name'] = unit_name
+            new_unit['available'] = True
+
+            new_units_names.add(unit_name)
+            new_units.append(new_unit)
+
+    print('Creating new units...')
+    if (len(new_units) == 0):
+        print('- No units to create')
+        return
+    
+    try:
+        db.units.insert_many(new_units)
+        print(f'- {len(new_units)} units created')
+    except Exception as e:
+        print(e)
+
+    return
+
+def create_studyplans(db, courses):
+    print('Getting studyplans from DB...')
+    db_studyplans = list(db.studyplans.find({
+        'available': True
+    }))
+    print(f'- {len(db_studyplans)} studyplans found')
+    db_semesters = list(db.semesters.find({
+        'available': True
+    }))
+
+    db_units = list(db.units.find({ 'available': True }))
+
+    new_studyplans = []
+    semester_re_pattern = r'(\d{4}-\d{4})'
+    print('Filtering studyplans...')
+    for course in courses:
+        for studyplan in course['studyplans']:
+            semester_long = re.split(semester_re_pattern, studyplan['semester'])[2].strip()
+            unit_name = studyplan['section'] + ' - ' + semester_long if semester_long in MAP_PROMOS_LONG else studyplan['section']
+
+            # Find unit in db
+            studyplan_unit = list(filter(lambda unit: unit['name'] == unit_name, db_units))
+            if (studyplan_unit == None or len(studyplan_unit) == 0):
+                print('Unit not found', unit_name)
+                continue
+            studyplan_unit = studyplan_unit[0]
+            
+            # Map semester name to semester type
+            if semester_long not in MAP_SEMESTERS_LONG:
+                semester_type = MAP_SEMESTERS_LONG[studyplan['section']]
+            else:
+                semester_type = MAP_SEMESTERS_LONG[semester_long]
+
+            # Find semester in db
+            studyplan_semester = list(filter(lambda semester: semester_type == semester.get('type'), db_semesters))
+            if (studyplan_semester == None or len(studyplan_semester) == 0):
+                continue
+            studyplan_semester = studyplan_semester[0]
+
+            # Check if studyplan already exists in db
+            found = False
+            for db_plan in db_studyplans:
+                if (
+                    db_plan['unit_id'] == studyplan_unit['_id'] and
+                    db_plan['semester_id'] == studyplan_semester['_id']
+                ):
+                    found = True
+                    break
+            
+            # If studyplan already exists, continue
+            if (found == True):
+                continue
+            
+            # Check if studyplan already exists in new_studyplans
+            found = False
+            for new_plan in new_studyplans:
+                if (
+                    new_plan['unit_id'] == studyplan_unit['_id'] and
+                    new_plan['semester_id'] == studyplan_semester['_id']
+                ):
+                    found = True
+                    break
+
+            # If studyplan already exists, continue
+            if (found == True):
+                continue
+
+            new_studyplans.append({
+                'unit_id': studyplan_unit['_id'],
+                'semester_id': studyplan_semester['_id'],
+                'available': True,
+            })
+
+    print('Creating studyplans...')
+    if (len(new_studyplans) == 0):
+        print('- No new studyplans to create')
+        return
+
+    # Find duplicates in new_studyplans
+    
+    try:
+        db.studyplans.insert_many(new_studyplans)
+        print(f'- {len(new_studyplans)} studyplans created')
+    except Exception as e:
+        print(e)
+
+    return
+
+def create_planned_in(db, courses):
+    db_courses = list(db.courses.find({
+        'available': True
+    }))
+    
+    db_units = list(db.units.find({
+        'available': True
+    }))
+
+    db_semester = get_current_or_next_semester(db)
+    db_semester_year = get_current_or_next_semester(db, 'year')
+
+    db_studyplans = list(db.studyplans.find({
+        'available': True,
+        'semester_id': {
+            '$in': [db_semester['_id'], db_semester_year['_id']]
+        }
+    }))
+
+    print('Getting planned_in from DB...')
+    db_planned_in = list(db.planned_in.find({
+        'available': True,
+        "studyplan_id": {
+            "$in": [studyplan['_id'] for studyplan in db_studyplans]
+        }
+    }))
+    print(f'- {len(db_planned_in)} planned_in found')
+
+    semester_re_pattern = r'(\d{4}-\d{4})'
+    new_planned_ins = []
+    print('Filtering planned_in...')
+    for course in tqdm(courses, total=len(courses)):
+        db_course = list(filter(lambda db_course: db_course['code'] == course['code'], db_courses))[0]
+        if (db_course == None):
+            continue
+
+        course_studyplans_ids = set()
+
+        for studyplan in course['studyplans']:
+            semester_long = re.split(semester_re_pattern, studyplan['semester'])[2].strip()
+            unit_name = studyplan['section'] + ' - ' + semester_long if semester_long in MAP_PROMOS_LONG else studyplan['section']
+
+            # Find unit in db
+            studyplan_unit = list(filter(lambda unit: unit['name'] == unit_name, db_units))[0]
+            if (studyplan_unit == None):
+                print('Unit not found')
+                continue
+
+            # Map semester name to semester type
+            if semester_long not in MAP_SEMESTERS_LONG:
+                semester_type = MAP_SEMESTERS_LONG[studyplan['section']]
+            else:
+                semester_type = MAP_SEMESTERS_LONG[semester_long]
+
+            # Find semester in db
+            studyplan_semester_db = list(filter(lambda semester: semester_type == semester.get('type'), [db_semester, db_semester_year]))
+            if (studyplan_semester_db == None or len(studyplan_semester_db) == 0):
+                continue
+            studyplan_semester_db = studyplan_semester_db[0]
+
+            # Find studyplan in db
+            studyplan_db = list(filter(lambda plan: plan['unit_id'] == studyplan_unit['_id'] and plan['semester_id'] == studyplan_semester_db['_id'], db_studyplans))
+            if (studyplan_db == None or len(studyplan_db) == 0):
+                continue
+            studyplan_db = studyplan_db[0]
+
+            # Find planned_in in db
+            planned_in_db = list(filter(lambda planned_in: \
+                planned_in['course_id'] == db_course['_id'] and \
+                planned_in['studyplan_id'] == studyplan_db['_id'], db_planned_in))
+
+            if (studyplan_db['_id'] in course_studyplans_ids):
+                continue
+            course_studyplans_ids.add(studyplan_db['_id'])
+
+            if (planned_in_db == None or len(planned_in_db) == 0):
+                new_planned_ins.append({
+                    'course_id': db_course['_id'],
+                    'studyplan_id': studyplan_db['_id'],
+                    'available': True
+                })
+
+
+    print('Creating planned_in...')
+    if (len(new_planned_ins) == 0):
+        print('- No new planned_in to create')
+        return
+
+    try:
+        db.planned_in.insert_many(new_planned_ins)
+        print(f'- {len(new_planned_ins)} planned_in created')
+    except Exception as e:
+        print(e)
+    return
+
+def get_current_or_next_semester(db, semester_type=None):
+    
+    today = datetime.today()
+
+    # If semester_type is specified, get the current or next semester of this type
+    if (semester_type != None):
+        semester = db.semesters.find_one({
+            "end_date": {
+                "$gte": today
+            },
+            "type": semester_type
+        }, sort=[("end_date", 1)])
+
+        return semester
+
+    # Get the current semester
+    semester = db.semesters.find_one({
+        "start_date": {
+            "$gte": today
+        },
+        "end_date": {
+            "$lte": today
+        },
+        "type": {
+            "$ne": "year"
+        }
+    })
+
+    # If no current semester is found, get the first next semester
+    if not semester:
+        semester = db.semesters.find_one({
+            "start_date": {
+                "$gte": today
+            },
+            "type": {
+                "$ne": "year"
+            }
+        }, sort=[("start_date", 1)])
+        
+    return semester
+
+def find_semester_courses_ids(db):
+    semester = get_current_or_next_semester(db)
+    current_year_semester = get_current_or_next_semester(db, 'year')
+
+    if (semester == None):
+        return
+
+    print('Getting studyplans from DB...')
+    filtered_studyplans = list(db.studyplans.find({
+        'available': True,
+        'semester_id': {
+            '$in': [semester['_id'], current_year_semester['_id']]
+        }
+    }))
+    filtered_studyplans_ids = [studyplan['_id'] for studyplan in filtered_studyplans]
+    print(f'- {len(filtered_studyplans_ids)} studyplans found')
+
+
+    planned_in = list(db.planned_in.find({
+        'available': True,
+        'studyplan_id': {
+            '$in': filtered_studyplans_ids
+        }
+    }))
+    semester_courses_ids = [planned['course_id'] for planned in planned_in]
+
+
+    return semester_courses_ids
+
+### PARSE COURSE SCHEDULE ###
+def get_course_schedule(url):
+    page = requests.get(url)
+    if (page.status_code == 404):
+        print(url)
+        return
+        
+    soup = BeautifulSoup(page.content, "html.parser")
+
+    schedule = soup.find('div', class_="coursebook-week-caption sr-only")
+
+    edoc = False
+    if (schedule == None):
+        schedule_parsed= parse_schedule_EDOC(soup)
+        edoc = True
+    else:
+        schedule_parsed = parse_schedule(soup)
+
+    return schedule_parsed, edoc
+
 ### PARSE SCHEDULE DOCTORAL SCHOOL ###
-def parseScheduleEcoleDoctorale(soup):
+def parse_schedule_EDOC(soup):
     # Ecole doctorale
     schedule = dict()
 
@@ -117,7 +671,7 @@ def parseScheduleEcoleDoctorale(soup):
             for room in rooms_found:
                 if (room in MAP_ROOMS):
                     if (isinstance(MAP_ROOMS[room], list)):
-                        rooms.append([x for x in MAP_ROOMS[room]])
+                        rooms += [x for x in MAP_ROOMS[room]]
                     else:
                         rooms.append(MAP_ROOMS[room])
                 elif (room not in ROOMS_FILTER):
@@ -132,12 +686,13 @@ def parseScheduleEcoleDoctorale(soup):
             else:
                 print(label)
 
+            # create datetime object from date string dd.mm.yyyy and time string hh
+            start_datetime = date.replace(hour=start_hour, minute=0, second=0, microsecond=0)
             creneau = {
-                'start_hour': start_hour,
-                'duration': duration,
+                'start_datetime': start_datetime,
+                'end_datetime': start_datetime + timedelta(hours=duration),
                 'label': label,
                 'rooms': rooms,
-                'date': date
             }
             if (len(rooms) > 0):
                 creneaux.append(creneau)
@@ -151,7 +706,7 @@ def parseScheduleEcoleDoctorale(soup):
     for creneau in creneaux:
         found = False
         for i, s in enumerate(schedule):
-            if (s['start_hour'] == creneau['start_hour'] and s['duration'] == creneau['duration'] and s['label'] == creneau['label'] and s['date'] == creneau['date']):
+            if (s['start_datetime'] == creneau['start_datetime'] and s['end_datetime'] == creneau['end_datetime'] and s['label'] == creneau['label']):
                 schedule[i]['rooms'] = schedule[i]['rooms'] + creneau['rooms']
                 found = True
                 break
@@ -160,665 +715,162 @@ def parseScheduleEcoleDoctorale(soup):
 
     return schedule
 
-### PARSE SCHEDULE ###
-def parseSchedule(soup):
-    # Not ecole doctorale
-    
-    schedule = dict()
 
-    if (soup.find("table", class_="semaineDeRef") == None):
-        return None
-    
-    rows = soup.find("table", class_="semaineDeRef").findAll("tr")
-    days = []
-    for i, row in enumerate(rows):
-        col = row.findAll('td')
-        skip_days = 0
-        for j, col in enumerate(col):
-            if (i == 0):
-                if (j > 0):
-                    days.append(col.text)
-            else:
-                if (j == 0):
-                    time = col.text
+def parse_schedule(soup):
+    creneaux = soup.find('div', class_="coursebook-week-caption sr-only").findAll('p')
+
+    schedule = []
+    for creneau in creneaux:
+         # Extracting the full text from the paragraph
+        full_text = creneau.get_text().replace('\xa0', ' ')
+
+        day = full_text.split(',')[0]
+
+        # Mapping days to weekday numbers
+        days_map = {'Lundi': 0, 'Mardi': 1, 'Mercredi': 2, 'Jeudi': 3, 'Vendredi': 4, 'Samedi': 5, 'Dimanche': 6}
+        day = days_map[day]
+
+        # Extracting start hour and duration
+        time_match = re.search(r'(\d{1,2}h) - (\d{1,2}h)', full_text)
+        start_hour, end_hour = time_match.groups() if time_match else (None, None)
+        duration = int(end_hour[:-1]) - int(start_hour[:-1]) if start_hour and end_hour else None
+        start_hour = int(start_hour[:-1]) if start_hour else None
+
+        # Extracting label
+        first_room = creneau.find('a')
+        if first_room:
+            label = creneau.find('a').previousSibling.text.split(': ')[1].strip()
+        else:
+            label = creneau.text.split(': ')[1].strip()
+
+        if label == 'Cours':
+            label = 'cours'
+        elif label == 'Exercice, TP':
+            label = 'exercice'
+        elif label == 'Projet, autre':
+            label = 'projet'
+            
+
+        # Extracting rooms
+        rooms_found = [link.get_text() for link in creneau.findAll('a', href=True)]
+        rooms = []
+        for room in rooms_found:
+            if (room in MAP_ROOMS):
+                if (isinstance(MAP_ROOMS[room], list)):
+                    rooms += [x for x in MAP_ROOMS[room]]
                 else:
-                    day = days[j-1]
-                    if (time in schedule):
-                        if (day in schedule[time]):
-                            if ('skip' in schedule[time][day]):
-                                skip_days += 1
-                    classes = col.get('class')
-                    if (classes != None and "taken" in classes):
-                        if (col.get('rowspan') == None):
-                            duration = 1
-                        else:
-                            duration = int(col.get('rowspan'))
-                        classes.remove('taken')
-                        if (len(classes) != 0):
-                            label = classes[0]
-                            day = days[j-1 + skip_days]
-                            rooms_found = [room.text for room in col.findAll('a')]
-                            rooms = []
-                            for room in rooms_found:
-                                if (room in MAP_ROOMS):
-                                    if (isinstance(MAP_ROOMS[room], list)):
-                                        for x in MAP_ROOMS[room]:
-                                            rooms.append(x)
-                                    else:
-                                        rooms.append(MAP_ROOMS[room])
-                                elif (room not in ROOMS_FILTER):
-                                    rooms.append(room)
-                            
-                            if (time not in schedule):
-                                schedule[time] = dict()
-                            schedule[time][day] = {
-                                'label': label,
-                                'duration': duration,
-                                'rooms': rooms
-                            }
-                            # Check if there is a skip to add on the day column
-                            if (duration > 1):
-                                for k in range(duration):
-                                    k_time = '-'.join(list(map(lambda x: str(int(x)+k), time.split('-'))))
-                                    if (k_time not in schedule):
-                                        schedule[k_time] = dict()
-                                        schedule[k_time][day] = {
-                                            'skip': True
-                                        }
-                            
-    if (len(schedule.keys()) == 0):
-        return None
-    
-    return schedule
+                    rooms.append(MAP_ROOMS[room])
+            elif (room not in ROOMS_FILTER):
+                rooms.append(room)
 
-
-### CREATE NEW SEMESTER ###
-def create_new_semester(db, **kwargs):
-    name = kwargs.get("name") or None
-    start_date = kwargs.get("start_date") or None
-    end_date = kwargs.get("end_date") or None
-    type = kwargs.get("type") or None
-    available = kwargs.get("available") or False
-    
-    try:
-        db.semesters.insert_one({
-            "name": name,
-            "start_date": start_date,
-            "end_date": end_date,
-            "type": type,
-            "available": available
-       })
-    except Exception as e:
-        print(e)
-
-### CREATE COURSES ###
-def create_courses(db, courses):
-    '''
-        Create courses in the db
-        Input:
-            - courses: a list of courses to create
-        Output:
-            - None
-    '''
-    db_courses_codes = [course.get('code') for course in db.courses.find()]
-    
-    new_courses = []
-    for course in tqdm(courses, total=len(courses)):
-        if (course.get("code") in db_courses_codes):
-            continue
-        new_courses.append({
-            "code": course.get("code"),
-            "name": course.get("name"),
-            "credits": course.get("credits"),
-            "edu_url": course.get("edu_url"),
-            "available": True
+        schedule.append({
+            'day': day,
+            'start_hour': start_hour,
+            'duration': duration,
+            'label': label,
+            'rooms': rooms
         })
 
-    if (len(new_courses) == 0):
-        return
+    return schedule
     
-    try:
-        db.courses.insert_many(new_courses)
-    except Exception as e:
-        print(e)
-
-    return
-
-
-### FILTER DUPLICATES COURSES ###
-def filter_duplicates_courses(courses):
-    '''
-        Filter duplicates courses
-        Input:
-            - courses: a list of courses
-        Output:
-            - filtered_courses: a list of courses without duplicates
-    '''
-    filtered_courses = []
-    filtered_courses_codes = []
-    for course in courses:
-        if (course.get("code") not in filtered_courses_codes):
-            filtered_courses_codes.append(course.get("code"))
-            filtered_courses.append(course)
-    return filtered_courses
+def create_semester_schedule(schedule, db_semester):
+    start_date = db_semester.get('start_date')
+    end_date = db_semester.get('end_date')
+    skip_dates = db_semester.get('skip_dates')
+    if (skip_dates == None):
+        skip_dates = []
 
 
-### CREATE TEACHERS ###
-def create_teachers(db, courses):
-    '''
-        Create teachers in the db
-        Input:
-            - courses: a list of courses
-        Output:
-            - None
-    '''
-    db_teachers = list(db.teachers.find({
-        "available": True
-    }))
+    semester_schedule = []
 
-    new_teachers = []
-    for course in tqdm(courses, total=len(courses)):
-        for teacher in course.get("teachers"):
-            found = False
-            for db_teacher in db_teachers:
-                if (db_teacher.get("name") == teacher[0]):
-                    found = True
-                    break
-            
-            for new_teacher in new_teachers:
-                if (new_teacher.get("name") == teacher[0]):
-                    found = True
-                    break
+     # Iterate through each day of the semester
+    current_date = start_date
+    while current_date <= end_date:
+        if current_date not in skip_dates:
+            # Add each event in the schedule to this day
+            for event in schedule:
+                if event['day'] != current_date.weekday():
+                    continue
+                
+                # Parse start hour
+                start_hour = datetime.strptime(str(event['start_hour']), '%H').time()
+                start_datetime = datetime.combine(current_date, start_hour)
 
-            if (found == True):
-                continue
+                # Calculate end datetime based on duration
+                duration_hours = int(event['duration'])
+                end_datetime = start_datetime + timedelta(hours=duration_hours)
 
-            new_teachers.append({
-                "name": teacher[0],
-                "people_url": teacher[1],
-                "available": True
-            })
+                # Create a new event entry for the semester schedule
+                event_entry = {
+                    'start_datetime': start_datetime,
+                    'end_datetime': end_datetime,
+                    'label': event['label'],
+                    'rooms': event['rooms']
+                }
 
-    if (len(new_teachers) == 0):
-        return
+                semester_schedule.append(event_entry)
+        
+        # Move to the next day
+        current_date += timedelta(days=1)
+
+    return semester_schedule
     
-    try:
-        db.teachers.insert_many(new_teachers)
-    except Exception as e:
-        print(e)
 
-    return
+def find_courses_schedules(db):
 
-### CREATE TEACH IN ###
-def create_teach_in(db, courses):
-    '''
-        Create teach_in in the db
-        Input:
-            - courses: a list of courses to create
-        Output:
-            - None
-    '''
-    db_teach_in = list(db.teach_in.find({
-        "available": True
-    }))
+    semester = get_current_or_next_semester(db)
+    semester_courses_ids = find_semester_courses_ids(db)
 
-    new_teach_in = []
-    for course in tqdm(courses):
-        for teacher in course.get("teachers"):
-            db_teacher = db.teachers.find_one({"name": teacher[0]})
-            if (db_teacher is None):
-                print("Teacher not found in db")
-                continue
-
-            db_course = db.courses.find_one({"code": course.get("code")})
-            if (db_course is None):
-                print("Course not found in db")
-                continue
-
-            found = False
-            for db_teach in db_teach_in:
-                if (
-                    db_teach.get("teacher_id") == db_teacher.get("_id") and
-                    db_teach.get("course_id") == db_course.get("_id")
-                ):
-                    found = True
-                    break
-            
-            if (found == True):
-                continue
-
-            new_teach_in.append({
-                "teacher_id": db_teacher.get("_id"),
-                "course_id": db_course.get("_id"),
-                "available": True
-            })
-
-    if (len(new_teach_in) == 0):
-        return
-    
-    try:
-        db.teach_in.insert_many(new_teach_in)
-    except Exception as e:
-        print(e)
-
-    return
-
-### LIST COURSE SCHEDULES ###
-def list_course_schedules(db, course):
-    '''
-        Get all the room schedules for a course in a semester
-        Input:
-            - course: the course object
-        Output:
-            - schedules: a list of schedules
-    '''
-
-    # Get course db object
-    db_course = db.courses.find_one({"code": course.get("code")})
-    if (db_course is None):
-        print("Course not found in db")
-        return []
-
-    # Get semester
-    semester_type = course.get("semester")
-    if (semester_type is None):
-        return []
-    
-    if (semester_type == "Automne"):
-        semester_type = "fall"
-    elif (semester_type == "Printemps"):
-        semester_type = "spring"    
-
-    # Get course schedule
-    course_schedule = course.get("schedule")
-
-    if (course_schedule is None):
-        return []
-    
-    if (semester_type == "ecole_doctorale"):
-        schedules = []
-
-        # Loop through the course schedule for that day
-        for schedule in course_schedule:
-
-            date = schedule.get('date')
-            start_hour = schedule.get('start_hour')
-            duration = schedule.get('duration', 1)  # default to 1 hour if not specified
-
-            schedule = {
-                'course_id': db_course.get('_id'),
-                'start_datetime': datetime.combine(date, datetime.min.time()).replace(hour=start_hour),
-                'end_datetime': datetime.combine(date, datetime.min.time()).replace(hour=start_hour + duration),
-                'label': schedule.get('label'),
-                'available': True,
-                'rooms': schedule.get('rooms')
-            }
-            schedules.append(schedule)
-        return schedules
-    else:
-        # Map from number to day of the week
-        map_days = {
-            0: 'Lu',
-            1: 'Ma',
-            2: 'Me',
-            3: 'Je',
-            4: 'Ve'
+    print('Getting courses from DB...')
+    db_courses = list(db.courses.find({
+        '_id': {
+            '$in': semester_courses_ids
         }
-        
-        semester = db.semesters.find_one({"type": semester_type})
-        if (semester is None):
-            print("Semester not found in db")
-            return []
+    }))
+    print(f'- {len(db_courses)} courses found')
 
-        semester_start = semester.get("start_date")
-        semester_end = semester.get("end_date")
+    db_schedules = list(db.course_schedules.find({
+        'available': True
+    }))
 
-        schedules = []
-        
-        # Loop through every date in the semester
-        current_date = semester_start
-        while current_date <= semester_end:
-            weekday = current_date.weekday()
+    schedules = []
 
-            # If it's not a weekday (Saturday or Sunday), skip
-            if weekday not in map_days:
-                current_date += timedelta(days=1)
-                continue
+    for course in tqdm(db_courses, total=len(db_courses)):
+        course_edu_url = course.get('edu_url')
+        if (course_edu_url == None):
+            continue
 
-            day_abbr = map_days[current_date.weekday()]
-            
-            # Loop through the course schedule for that day
-            for time, time_schedule in course_schedule.items():
-                if day_abbr in time_schedule:
-                    entry = time_schedule[day_abbr]
-                    
-                    # If it's not a 'skip' entry, create a booking
-                    if not entry.get('skip') or entry.get('skip') == False:
-                        start_hour = int(time.split('-')[0])
-                        duration = entry.get('duration', 1)  # default to 1 hour if not specified
-                        schedule = {
-                            'course_id': db_course.get('_id'),
-                            'start_datetime': datetime.combine(current_date, datetime.min.time()).replace(hour=start_hour),
-                            'end_datetime': datetime.combine(current_date, datetime.min.time()).replace(hour=start_hour + duration),
-                            'label': entry['label'],
-                            'available': True,
-                            'rooms': entry['rooms']
-                        }
-                        schedules.append(schedule)
-            
-            current_date += timedelta(days=1)
+        schedule, edoc = get_course_schedule(course_edu_url)
+
+        if (schedule == None):
+            continue
+
+        if (edoc == False):
+            schedule = create_semester_schedule(schedule, semester)
+
+        # Add course_id to schedule
+        for event in schedule:
+            event['course_id'] = course['_id']
+
+        schedules += schedule
 
     return schedules
 
-### CREATE COURSE SCHEDULES ###
-def create_course_schedules(db, course):
-    '''
-        Create all the schedules for a course in a semester
-        Input:
-            - course: the course to create the bookings for
-        Output:
-            - None
-    '''
-
-    db_course = db.courses.find_one({"code": course.get("code")})
-    if (db_course is None):
-        print("Course not found in db")
-        return None
-
-    schedules = list_course_schedules(db, course)
-
-    if schedules is None:
-        return
-    
-    if (len(schedules) == 0):
-        return
-    
-
-    db_schedules = list(db.course_schedules.find({
-        "course_id": schedules[0].get("course_id"),
-    }))
-
-    new_schedules = []
-    for schedule in schedules:
-        found = False
-        for db_schedule in db_schedules:
-            if (
-                schedule.get('course_id') == db_schedule.get('course_id') and
-                schedule.get('start_datetime') == db_schedule.get('start_datetime') and
-                schedule.get('end_datetime') == db_schedule.get('end_datetime')):
-                found = True
-                break
-        if not found:
-            new_schedule = {
-                "course_id": schedule.get("course_id"),
-                "start_datetime": schedule.get("start_datetime"),
-                "end_datetime": schedule.get("end_datetime"),
-                "label": schedule.get("label"),
-                "available": True
-            }
-            new_schedules.append(new_schedule)
-
-    if (len(new_schedules) == 0):
-        return
-    
-    try:
-        db.course_schedules.insert_many(new_schedules)
-    except Exception as e:
-        print(e)
-
-    return
-
-### CREATE COURSE BOOKINGS ###
-def create_course_bookings(db, course):
-    '''
-        Create all the bookings for a course in a semester
-        Input:
-            - course: the course to create the bookings for
-        Output:
-            - None
-    '''
-
-    db_course = db.courses.find_one({"code": course.get("code")})
-    if (db_course is None):
-        print("Course not found in db")
-        return None
-
-    # Get all schedules of a course and add a rooms field as a list of room names of the bookings linked to the schedule
-    db_schedules = list(db.course_schedules.aggregate([
-        {
-            "$match": {
-                "course_id": db_course.get("_id")
-            }
-        },
-        {
-            "$lookup": {
-                "from": "course_bookings",
-                "localField": "_id",
-                "foreignField": "schedule_id",
-                "as": "bookings"
-            }
-        },
-        {
-            "$lookup": {
-                "from": "rooms",
-                "localField": "bookings.room_id",
-                "foreignField": "_id",
-                "as": "rooms"
-            }
-        },
-        {
-            "$addFields": {
-                "rooms": "$rooms"
-            }
-        }
-    ]))
-
-    schedules = list_course_schedules(db, course)
-
-    if (len(schedules) == 0):
-        return
-
-    new_bookings = []
-    for schedule in schedules:
-        db_schedule_found = None
-        for db_schedule in db_schedules:
-            if (
-                schedule.get('course_id') == db_schedule.get('course_id') and
-                schedule.get('start_datetime') == db_schedule.get('start_datetime') and
-                schedule.get('end_datetime') == db_schedule.get('end_datetime')):
-                db_schedule_found = db_schedule
-                break
-        
-        if db_schedule_found is None:
-            print("Schedule not found in db")
-            continue
-
-        unique_rooms = list(set(schedule.get('rooms')))
-
-        for room_name in unique_rooms:
-            found = False
-            for db_room in db_schedule_found.get('rooms'):
-                if (
-                    room_name == db_room.get('name')):
-                    found = True
-                    break
-
-            if found == False:
-                room = db.rooms.find_one({"name": room_name})
-                if (room is None):
-                    print("Room not found in db")
-                    continue
-                new_booking = {
-                    "schedule_id": db_schedule_found.get("_id"),
-                    "room_id": room.get("_id"),
-                    "available": True
-                }
-                new_bookings.append(new_booking)
-
-    if (len(new_bookings) == 0):
-        return
-    
-    try:
-        db.course_bookings.insert_many(new_bookings)
-    except Exception as e:
-        print(e)
-
-    return
-
-def create_courses_schedules_and_bookings(db, courses):
-    '''
-        Create all the schedules and bookings for a list of courses in a semester
-        Input:
-            - courses: the list of courses to create the bookings for
-        Output:
-            - None
-    '''
-
-    for course in tqdm(courses):
-        create_course_schedules(db, course)
-        create_course_bookings(db, course)
-
-    return
-
-
-### GET COURSE ROOMS ###
-def get_course_rooms(db, course):
-    '''
-        Get all the rooms objects for a course
-        Input:
-            - course: the course object
-        Output:
-            - rooms: a list of rooms
-    '''
-
-    rooms_names = []
-
-    course_schedule = course.get("schedule")
-
-    if (course_schedule is None):
-        return []
-
-     # Loop through the course schedule
-    for _, time_schedule in course_schedule.items():
-        for _, entry in time_schedule.items():
-            
-            # If it's not a 'skip' entry, create a booking
-            if not entry.get('skip') or entry.get('skip') == False:
-                for room in entry['rooms']:
-                    if room not in rooms_names:
-                        rooms_names.append(room)
-
-    if (len(rooms_names) == 0):
-        return []
-    
-    rooms = list(db.rooms.find({"name": {"$in": rooms_names}}))
-
-    return rooms
-
-
 ### LIST ALL ROOMS ###
-def list_rooms(courses):
+def list_rooms(schedules):
 
     rooms = []
-    for course in courses:
-        course_rooms = list_course_rooms(course)
-        for room in course_rooms:
-            if room not in rooms:
-                rooms.append(room)
-
-    return rooms
-
-### LIST COURSE ROOMS ###
-def list_course_rooms(course):
-    rooms_names = []
-
-    course_schedule = course.get("schedule")
-
-    if (course_schedule is None):
-        return []
-    
-    if (course.get('semester') == 'ecole_doctorale'):
-        for schedule in course_schedule:
-            for room in schedule['rooms']:
-                if room not in rooms_names:
-                    rooms_names.append(room)
-
-    else:
-        # Loop through the course schedule
-        for _, time_schedule in course_schedule.items():
-            for _, entry in time_schedule.items():
-                
-                # If it's not a 'skip' entry, create a booking
-                if not entry.get('skip') or entry.get('skip') == False:
-                    for room in entry['rooms']:
-                        if room not in rooms_names:
-                            rooms_names.append(room)
-
-
-    return rooms_names
-
-
-### CREATE ROOMS ###
-def create_rooms(db, courses):
-    '''
-        Create rooms in the database
-        Input:
-            - db: the database
-            - room_names: a list of room names
-    '''
-
-    # List all rooms in the courses schedules
-    rooms_names = list_rooms(courses)
-
-    # Find all rooms on plan.epfl.ch
-    print("Getting rooms from plan.epfl.ch")
-    plan_rooms = list_plan_rooms()
-    plan_rooms_names = [plan_room.get("name") for plan_room in plan_rooms]
-
-
-    # List all rooms in the database
-    print("Getting rooms from database")
-    db_rooms = list(db.rooms.find({}))
-
-    # Update the type of the rooms in the database if necessary
-    print("Updating rooms in database")
-    for db_room in tqdm(db_rooms):
-        db_room_name = db_room.get("name")
-        db_room_type = db_room.get("type")
-        if (db_room_name not in plan_rooms_names):
-            # If the room is not on plan.epfl.ch, ignore it
+    for schedule in schedules:
+        if (schedule.get('rooms') == None):
             continue
-        plan_room = [plan_room for plan_room in plan_rooms if plan_room.get("name") == db_room_name][0]
-        plan_room_type = plan_room.get("type")
-        if (db_room_type != plan_room_type):
-            db.rooms.update_one({"name": db_room_name}, { "$set": { "type": plan_room_type }})
 
-    # List rooms to create
-    db_rooms_names = [db_room.get("name") for db_room in db_rooms]
-    new_rooms_names = [room_name for room_name in rooms_names if room_name not in db_rooms_names]
+        schedule_rooms = schedule.get('rooms')
 
-    # Create the rooms that are not in the database
-    print("Creating new rooms in database")
-    new_rooms = []
-    for room_name in tqdm(new_rooms_names):
-        plan_room = [plan_room for plan_room in plan_rooms if plan_room.get("name") == room_name] 
-        if (plan_room is None):
-            room_type = "unknown"
-        elif (len(plan_room) == 0):
-            room_type = "unknown"
-        else:
-            room_type = plan_room[0].get("type", "unknown")
-        
-        new_rooms.append({"name": room_name, "type": room_type, "available": True})
-
-    try:
-        db.rooms.insert_many(new_rooms)
-    except Exception as e:
-        print(e)
-
-    return
-            
-
+        for room in schedule_rooms:
+            if (room not in rooms):
+                rooms.append(room)
+                
+    return rooms
 
 
 
@@ -859,7 +911,7 @@ def list_plan_rooms():
                 - rooms: a list of XML rooms
         '''
         rooms_xml = []
-        for level in tqdm(range(-3, 6)):
+        for level in tqdm(range(-3, 8)):
             level_rooms_xml = list_level_rooms((2533565.4081416847, 1152107.9784703811), (2532650.4135850836, 1152685.3502971812), level, max=5000)
             if (level_rooms_xml and len(level_rooms_xml) > 0):
                 rooms_xml += level_rooms_xml
@@ -899,226 +951,263 @@ def list_plan_rooms():
 
     return rooms
 
-    
-    
-def list_courses_plan_studyplans():
-    URL_BA = "https://edu.epfl.ch/studyplan/fr/bachelor/"
-    URL_PROPE = "https://edu.epfl.ch/studyplan/fr/propedeutique/"
-    URL_MASTER = "https://edu.epfl.ch/studyplan/fr/master/"
-    URL_ROOT = 'https://edu.epfl.ch/'
 
-    # Find all BA study plans for each section and all courses in them
-    plans_etudes = []
-    for url in [URL_MASTER, URL_BA, URL_PROPE]:
-        page = requests.get(url)
-        soup = BeautifulSoup(page.content, "html.parser")
-        sections = [x.get('href') for x in soup.find('main').find('ul').findAll('a')]
-        for section in sections:
-            page = requests.get(URL_ROOT + section)
-            soup = BeautifulSoup(page.content, "html.parser")
-            section_name = ' '.join(soup.find('main').find('header').find('h2').text.split(' ')[:-1])
-            for cours in soup.find('main').findAll('div', class_="line"):
-                if (cours != None):
-                    code = cours.find('div', class_='cours-info').text.split('/')[0].replace(" ", "")
-                    if (code != ''):
-                        for sem in cours.findAll('div', class_='bachlor'):
-                            issemester = False
-                            for cep in sem.findAll('div', class_='cep'):
-                                if (cep.text != '-'):
-                                    issemester = True
-                            if (issemester == True):
-                                semester = sem.attrs['data-title']
-                        if (section_name not in MAP_SECTIONS):
-                            continue
-                        if (semester not in MAP_PROMOS):
-                            continue
+### CREATE ROOMS ###
+def create_rooms(db, schedules):
+    '''
+        Create schedules in the database
+        Input:
+            - db: the database
+            - schedules: a list of schedules
+    '''
 
-                        plans_etudes.append({
-                            "code": code,
-                            "promo": MAP_PROMOS[semester],
-                            "section": section_name
-                        })
+    # List all rooms in the schedules
+    rooms_names = list_rooms(schedules)
 
-    return plans_etudes
+    # Find all rooms on plan.epfl.ch
+    print("Getting rooms from plan.epfl.ch")
+    plan_rooms = list_plan_rooms()
+    plan_rooms_names = [plan_room.get("name") for plan_room in plan_rooms]
+    print(f"Found {len(plan_rooms_names)} rooms on plan.epfl.ch")
 
-def list_units(planned_in):
-    units = []
-    for plan in planned_in:
-        if (plan['promo'], plan['section']) not in units:
-            units.append((plan['promo'], plan['section']))
 
-    return units
+    # List all rooms in the database
+    print("Getting rooms from database")
+    db_rooms = list(db.rooms.find({
+        "available": True
+    }))
+    print(f"Found {len(db_rooms)} rooms in database")
 
-def create_units(db, planned_in):
+    # Update the type of the rooms in the database if necessary
+    print("Updating rooms in database")
+    for db_room in tqdm(db_rooms):
+        db_room_name = db_room.get("name")
+        db_room_type = db_room.get("type")
+        if (db_room_name not in plan_rooms_names):
+            # If the room is not on plan.epfl.ch, ignore it
+            print(f"Room {db_room_name} not found on plan.epfl.ch")
+            continue
+        plan_room = [plan_room for plan_room in plan_rooms if plan_room.get("name") == db_room_name][0]
+        plan_room_type = plan_room.get("type")
+        if (db_room_type != plan_room_type):
+            db.rooms.update_one({"name": db_room_name}, { "$set": { "type": plan_room_type }})
 
-    units = list_units(planned_in)
+    # List rooms to create
+    db_rooms_names = [db_room.get("name") for db_room in db_rooms]
+    new_rooms_names = [room_name for room_name in rooms_names if room_name not in db_rooms_names]
 
-    db_units = list(db.units.find())
-    db_units_names = [unit.get('name') for unit in db_units]
+    # Create the rooms that are not in the database
+    print("Filtering rooms to create")
+    new_rooms = []
+    for room_name in tqdm(new_rooms_names):
+        plan_room = [plan_room for plan_room in plan_rooms if plan_room.get("name") == room_name] 
+        if (plan_room is None):
+            room_type = "unknown"
+        elif (len(plan_room) == 0):
+            room_type = "unknown"
+        else:
+            room_type = plan_room[0].get("type", "unknown")
+        
+        new_rooms.append({"name": room_name, "type": room_type, "available": True})
 
-    map_promo_to_name = {v: k for k, v in MAP_PROMOS.items()}
-
-    new_units = []
-    for unit in tqdm(units):
-        unit_name = unit[1] + ' - ' + map_promo_to_name[unit[0]]
-        if (unit_name not in db_units_names):
-            new_units.append({
-                'code': MAP_SECTIONS[unit[1]] + '-' + unit[0],
-                'promo': unit[0],
-                'section': MAP_SECTIONS[unit[1]],
-                'name': unit_name,
-                'available': True
-            })
-
-    if (len(new_units) == 0):
+    if (len(new_rooms) == 0):
+        print("No new rooms to create")
         return
-    
+
+    print(f"Inserting {len(new_rooms)} new rooms in database")
     try:
-        db.units.insert_many(new_units)
+        db.rooms.insert_many(new_rooms)
     except Exception as e:
         print(e)
 
     return
 
-def create_studyplans(db, planned_in):
+def update_schedules(db, schedules):
+    db_rooms = list(db.rooms.find({
+        'available': True
+    }))
+
+    db_semester = get_current_or_next_semester(db)
+    db_year_semester = get_current_or_next_semester(db, 'year')
+
+    # Find studyplans in the current semester
     db_studyplans = list(db.studyplans.find({
-        'available': True
-    }))
-    db_semesters = list(db.semesters.find({
-        'available': True
-    }))
-
-    db_units = list(db.units.find({ 'available': True }))
-
-    map_promo_to_name = {v: k for k, v in MAP_PROMOS.items()}
-
-    unique_planned_in = []
-    unique_planned_in_ids = []
-    for plan in tqdm(planned_in):
-        if (plan['promo'], plan['section']) not in unique_planned_in_ids:
-            unique_planned_in.append(plan)
-            unique_planned_in_ids.append((plan['promo'], plan['section']))
-
-    new_studyplans = []
-    for plan in unique_planned_in:
-        plan_name = plan['section'] + ' - ' + map_promo_to_name[plan['promo']]
-        plan_unit = list(filter(lambda unit: unit['name'] == plan_name, db_units))[0]
-        if (plan_unit == None):
-            print('Unit not found')
-            continue
-        plan_semester = list(filter(lambda semester: MAP_SEMESTERS[plan.get('promo')] == semester.get('type'), db_semesters))[0]
-        if (plan_semester == None):
-            print('Semester not found')
-            continue
-
-        found = False
-
-        for db_plan in db_studyplans:
-            if (
-                db_plan['unit_id'] == plan_unit['_id'] and
-                db_plan['semester_id'] == plan_semester['_id']
-            ):
-                found = True
-                break
-        if (found == True):
-            continue
-
-        new_studyplans.append({
-            'unit_id': plan_unit['_id'],
-            'semester_id': plan_semester['_id'],
-            'available': True,
-        })
-
-    if (len(new_studyplans) == 0):
-        return
-    
-    try:
-        db.studyplans.insert_many(new_studyplans)
-    except Exception as e:
-        print(e)
-
-    return
-
-def create_planned_in(db, planned_in):
-    pipeline = [
-        {
-            "$lookup": {
-                "from": "units",
-                "localField": "unit_id",
-                "foreignField": "_id",
-                "as": "unit"
-            }
-        },
-        {
-            "$lookup": {
-                "from": "semesters",  # Assuming the name of your semester collection is 'semesters'
-                "localField": "semester_id",  # Assuming the field in studyplans referring to semester is 'semester_id'
-                "foreignField": "_id",
-                "as": "semester"
-            }
-        },
-        {
-            "$match": {
-                "available": True
-            }
+        'available': True,
+        'semester_id': {
+            '$in': [db_semester['_id'], db_year_semester['_id']]
         }
-    ]
-
-    db_studyplans = list(db.studyplans.aggregate(pipeline))
-
-    db_planned_in = list(db.planned_in.find({
-        'available': True
     }))
 
-    map_promo_to_name = {v: k for k, v in MAP_PROMOS.items()}
+    # Find planned_in in the current semester
+    db_planned_in = list(db.planned_in.find({
+        'available': True,
+        'studyplan_id': {
+            '$in': [studyplan['_id'] for studyplan in db_studyplans]
+        }
+    }))
 
-    new_planned_in = []
-    for plan in tqdm(planned_in):
-        plan_unit_name = plan['section'] + ' - ' + map_promo_to_name[plan['promo']]
-        plan_semester = MAP_SEMESTERS[plan.get('promo')]
+    # Find schedules with course in the studyplans
+    print('Getting schedules from DB...')
+    db_schedules = list(db.course_schedules.find({
+        'available': True,
+        'course_id': {
+            '$in': [planned_in['course_id'] for planned_in in db_planned_in]
+        }
+    }))
+    print(f'- {len(db_schedules)} schedules found')
 
-        db_course = db.courses.find_one({
-            'code': plan.get('code')
-        })
-        if (db_course == None):
-            continue
-
-        studyplan = list(filter(lambda studyplan: studyplan['unit'][0].get('name') == plan_unit_name and studyplan['semester'][0].get('type') == plan_semester, db_studyplans))
-
-        if (len(studyplan) == 0):
-            print('Studyplan not found')
-            continue
-
-        studyplan = studyplan[0]
-
-        if (studyplan == None):
-            print('Studyplan not found')
-            continue
-
+    incoming_schedules = schedules.copy()
+    
+    print(f'Filtering {len(incoming_schedules)} schedules...')
+    new_schedules = []
+    for incoming_schedule in tqdm(incoming_schedules, total=len(incoming_schedules)):
         found = False
-        for db_plan in db_planned_in:
+        for db_schedule in db_schedules:
             if (
-                db_plan['course_id'] == db_course['_id'] and
-                db_plan['studyplan_id'] == studyplan['_id']
+                db_schedule.get('course_id') == incoming_schedule.get('course_id') and
+                db_schedule.get('start_datetime') == incoming_schedule.get('start_datetime') and
+                db_schedule.get('end_datetime') == incoming_schedule.get('end_datetime') and
+                db_schedule.get('label') == incoming_schedule.get('label')
             ):
                 found = True
+                db_schedules.remove(db_schedule)
                 break
 
         if (found == True):
             continue
 
-        new_planned_in.append({
-            'course_id': db_course['_id'],
-            'studyplan_id': studyplan['_id'],
-            'available': True,
+        new_schedules.append({
+            'course_id': incoming_schedule.get('course_id'),
+            'start_datetime': incoming_schedule.get('start_datetime'),
+            'end_datetime': incoming_schedule.get('end_datetime'),
+            'label': incoming_schedule.get('label'),
+            'available': True
         })
 
-    if (len(new_planned_in) == 0):
-        return
-    
+    # delete remaining db_schedules
+    print('Deleting schedules not in incoming schedules...')
     try:
-        db.planned_in.insert_many(new_planned_in)
+        db.schedules.update_many({
+            '_id': {
+                '$in': [db_schedule.get('_id') for db_schedule in db_schedules]
+            }
+        }, {
+            '$set': {
+                'available': False
+            }
+        })
+        print(f'- {len(db_schedules)} schedules deleted')
     except Exception as e:
         print(e)
 
-    return
+    # insert new schedules
+    if (len(new_schedules) == 0):
+        print('No new schedules to create')
+        return
+
+    try:
+        print(f'Creating {len(new_schedules)} new schedules...')
+        db.course_schedules.insert_many(new_schedules)
+        print(f'- {len(new_schedules)} schedules created')
+    except Exception as e:
+        print(e)
+
+def create_courses_bookings(db, schedules):
+    db_rooms = list(db.rooms.find({
+        'available': True
+    }))
+
+    db_schedules = list(db.course_schedules.find({
+        'available': True
+    }))
+
+    print('Getting DB bookings...')
+    db_bookings = list(db.course_bookings.find({
+        'available': True
+    }))
+    print(f'- {len(db_bookings)} bookings found in DB')
+
+    print('Filtering bookings....')
+    new_bookings = []
+    for schedule in tqdm(schedules, total=len(schedules)):
+        db_schedule = None
+        for db_item in db_schedules:
+            if (
+                db_item.get('course_id') == schedule.get('course_id') and
+                db_item.get('start_datetime') == schedule.get('start_datetime') and
+                db_item.get('end_datetime') == schedule.get('end_datetime') and
+                db_item.get('label') == schedule.get('label')
+            ):
+                db_schedule = db_item
+                break
+
+        if (db_schedule == None):
+            continue
+
+        for room in schedule['rooms']:
+            db_room = list(filter(lambda db_room: db_room['name'] == room, db_rooms))
+
+            if (db_room == None or len(db_room) == 0):
+                continue
+            db_room = db_room[0]
+
+            # Check if booking already exists
+            found = False
+            for db_booking in db_bookings:
+                if (
+                    db_booking.get('schedule_id') == db_schedule['_id'] and
+                    db_booking.get('room_id') == db_room['_id']
+                ):
+                    found = True
+                    break
+            
+            if (found == True):
+                continue
+            
+            booking = {
+                'schedule_id': db_schedule['_id'],
+                'room_id': db_room['_id'],
+                'available': True
+            }
+
+            new_bookings.append(booking)
+
+    # remove bookings with a schedule_id not in db_schedules
+    print('Removing bookings without schedule...')
+    try:
+        # find bookings without a schedule_id in db_schedules
+        bookings_without_schedule = []
+        schedules_ids = [schedule['_id'] for schedule in db_schedules]
+        for booking in tqdm(db_bookings, total=len(db_bookings)):
+            if (booking.get('schedule_id') not in schedules_ids):
+                bookings_without_schedule.append(booking)
+
+        if (len(bookings_without_schedule) == 0):
+            print('- No bookings to remove')
+        else:
+            db.course_bookings.update_many({
+                '_id': {
+                    '$in': [booking.get('_id') for booking in bookings_without_schedule]
+                }
+            }, {
+                '$set': {
+                    'available': False
+                }
+            })
+            print(f'- {len(bookings_without_schedule)} bookings removed')
+        
+    except Exception as e:
+        print(e)
+
+    
+    if (len(new_bookings) == 0):
+        print('No bookings to create')
+        return
+
+    # insert new bookings
+    try:
+        print(f'Creating {len(new_bookings)} new bookings...')
+        db.course_bookings.insert_many(new_bookings)
+        print(f'- {len(new_bookings)} bookings created')
+    except Exception as e:
+        print(e)
