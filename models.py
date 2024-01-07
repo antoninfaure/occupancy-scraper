@@ -76,31 +76,6 @@ course_validator = {
             "teachers": {
                 "bsonType": "array",
                 "description": "must be an array of objects"
-            },
-            "studyplans": {
-                "bsonType": "array",
-                "description": "must be an array of objects"
-            }
-        }
-    }
-}
-
-teach_in_validator = {
-    "$jsonSchema": {
-        "bsonType": "object",
-        "required": ["teacher_id", "course_id", "available"],
-        "properties": {
-            "teacher_id": {
-                "bsonType": "objectId",
-                "description": "must be an objectId and is required"
-            },
-            "course_id": {
-                "bsonType": "objectId",
-                "description": "must be an objectId and is required"
-            },
-            "available": {
-                "bsonType": "bool",
-                "description": "must be a bool and is required"
             }
         }
     }
@@ -138,12 +113,8 @@ course_schedule_validator = {
 event_schedule_validator = {
     "$jsonSchema": {
         "bsonType": "object",
-        "required": ["role_id", "start_datetime", "end_datetime", "available", "type", "visible", "status"],
+        "required": ["start_datetime", "end_datetime", "available", "label", "name"],
         "properties": {
-            "role_id": {
-                "bsonType": "objectId",
-                "description": "must be an objectId and is required"
-            },
             "start_datetime": {
                 "bsonType": "date",
                 "description": "must be a date and is required"
@@ -156,21 +127,13 @@ event_schedule_validator = {
                 "bsonType": "bool",
                 "description": "must be a bool and is required"
             },
-            "type": {
+            "label": {
                 "bsonType": "string",
                 "description": "must be a string and is required"
             },
             "description": {
                 "bsonType": "string",
                 "description": "must be a string"
-            },
-            "visible": {
-                "bsonType": "bool",
-                "description": "must be a bool and is required"
-            },
-            "status": {
-                "bsonType": "int",
-                "description": "must be an integer and is required"
             },
             "name": {
                 "bsonType": "string",

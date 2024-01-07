@@ -47,21 +47,6 @@ def init(db):
         except Exception as e:
             print(e)
 
-    def init_teach_in_collection():
-        try:
-            db.create_collection("teach_in")
-            print("Created collection teach_in")
-        except Exception as e:
-            if str(e) != "collection teach_in already exists":
-                print(e)
-            return
-
-        try:
-            db.command("collMod", "teach_in", validator=teach_in_validator)
-            db.teach_in.create_index([("teacher_id", pymongo.ASCENDING), ("course_id", pymongo.ASCENDING)], name="teach_in_unique", unique=True)
-        except Exception as e:
-            print(e)
-        
     def init_course_bookings_collection():
         try:
             db.create_collection("course_bookings")
@@ -181,7 +166,7 @@ def init(db):
         except Exception as e:
             print(e)
     
-    pbar = tqdm(total=11, desc="Initializing DB", leave=False)
+    pbar = tqdm(total=10, desc="Initializing DB", leave=False)
     
 
     inits = [
@@ -190,7 +175,6 @@ def init(db):
         # Course collections
         init_teachers_collection(),
         init_courses_collection(),
-        init_teach_in_collection(),
         init_course_bookings_collection(),
         init_course_schedules_collection(),
         init_studyplans_collection(),
