@@ -393,6 +393,7 @@ def create_studyplans(db, courses):
             studyplan_unit = studyplan_unit[0]
             
             # Map semester name to semester type
+            semester_type = None
             if semester_long not in MAP_SEMESTERS_LONG:
                 semester_type = MAP_SEMESTERS_LONG[studyplan['section']]
             else:
@@ -462,15 +463,18 @@ def create_planned_in(db, courses):
         'available': True
     }))
 
-    db_semester = get_current_or_next_semester(db)
-    db_semester_year = get_current_or_next_semester(db, 'year')
+    db_semesters = list(db.semesters.find({
+        'available': True
+    }))
 
+    print('Getting studyplans from DB...')
     db_studyplans = list(db.studyplans.find({
         'available': True,
         'semester_id': {
-            '$in': [db_semester['_id'], db_semester_year['_id']]
+            '$in': [semester['_id'] for semester in db_semesters]
         }
     }))
+    print(f'- {len(db_studyplans)} studyplans found')
 
     print('Getting planned_in from DB...')
     db_planned_in = list(db.planned_in.find({
@@ -490,7 +494,7 @@ def create_planned_in(db, courses):
             continue
 
         course_studyplans_ids = set()
-
+        
         for studyplan in course['studyplans']:
             semester_long = re.split(semester_re_pattern, studyplan['semester'])[2].strip()
             unit_name = studyplan['section'] + ' - ' + semester_long if semester_long in MAP_PROMOS_LONG else studyplan['section']
@@ -508,7 +512,7 @@ def create_planned_in(db, courses):
                 semester_type = MAP_SEMESTERS_LONG[semester_long]
 
             # Find semester in db
-            studyplan_semester_db = list(filter(lambda semester: semester_type == semester.get('type'), [db_semester, db_semester_year]))
+            studyplan_semester_db = list(filter(lambda semester: semester_type == semester.get('type'), db_semesters))
             if (studyplan_semester_db == None or len(studyplan_semester_db) == 0):
                 continue
             studyplan_semester_db = studyplan_semester_db[0]
@@ -516,6 +520,7 @@ def create_planned_in(db, courses):
             # Find studyplan in db
             studyplan_db = list(filter(lambda plan: plan['unit_id'] == studyplan_unit['_id'] and plan['semester_id'] == studyplan_semester_db['_id'], db_studyplans))
             if (studyplan_db == None or len(studyplan_db) == 0):
+                print('Studyplan not found')
                 continue
             studyplan_db = studyplan_db[0]
 
@@ -589,9 +594,7 @@ def get_current_or_next_semester(db, semester_type=None):
         
     return semester
 
-def find_semester_courses_ids(db):
-    semester = get_current_or_next_semester(db)
-    current_year_semester = get_current_or_next_semester(db, 'year')
+def find_semester_courses_ids(db, semester):
 
     if (semester == None):
         return
@@ -599,9 +602,7 @@ def find_semester_courses_ids(db):
     print('Getting studyplans from DB...')
     filtered_studyplans = list(db.studyplans.find({
         'available': True,
-        'semester_id': {
-            '$in': [semester['_id'], current_year_semester['_id']]
-        }
+        'semester_id': semester['_id']
     }))
     filtered_studyplans_ids = [studyplan['_id'] for studyplan in filtered_studyplans]
     print(f'- {len(filtered_studyplans_ids)} studyplans found')
@@ -819,14 +820,29 @@ def create_semester_schedule(schedule, db_semester):
 def find_courses_schedules(db):
 
     semester = get_current_or_next_semester(db)
-    semester_courses_ids = find_semester_courses_ids(db)
+    semester_courses_ids = find_semester_courses_ids(db, semester)
+
+    current_year = get_current_or_next_semester(db, 'year')
+    current_year_courses_ids = find_semester_courses_ids(db, current_year)
+
 
     print('Getting courses from DB...')
-    db_courses = list(db.courses.find({
+    db_courses_semester = list(db.courses.find({
         '_id': {
             '$in': semester_courses_ids
         }
     }))
+    db_courses_semester_codes = [course.get('code') for course in db_courses_semester]
+
+    db_courses_year = list(db.courses.find({
+        '_id': {
+            '$in': list(set(current_year_courses_ids) - set(semester_courses_ids))
+        }
+    }))
+    db_courses_year_codes = [course.get('code') for course in db_courses_year]
+
+    db_courses = db_courses_semester + db_courses_year
+
     print(f'- {len(db_courses)} courses found')
 
     db_schedules = list(db.course_schedules.find({
@@ -846,6 +862,8 @@ def find_courses_schedules(db):
             continue
 
         if (edoc == False):
+            if (course.get('code') not in db_courses_semester_codes):
+                continue
             schedule = create_semester_schedule(schedule, semester)
 
         # Add course_id to schedule
@@ -853,6 +871,9 @@ def find_courses_schedules(db):
             event['course_id'] = course['_id']
 
         schedules += schedule
+
+        if (course.get('code') == 'COM-406'):
+            print(schedule)
 
     return schedules
 
