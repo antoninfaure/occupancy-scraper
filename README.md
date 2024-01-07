@@ -1,4 +1,4 @@
-# :clock1: [Occupancy FLEP - Backend](https://occupancy.flep.ch/)
+# :clock1: [Occupancy FLEP - Scraper](https://occupancy.flep.ch/)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -13,40 +13,51 @@ Interface of edu.epfl.ch, useful for finding free rooms or schedule by studyplan
 
 - **Explore Study Plans**: Explore study plans using their unique study plan ID. The application showcases an interactive and organized timetable that covers the entire semester, highlighting courses, schedules, and room bookings.
 
+## Backend
+![Node.js](https://img.shields.io/badge/Node.js-%23000.svg?style=for-the-badge&logo=Node.js&logoColor=white&color=%23339933) ![TypeScript](https://img.shields.io/badge/typescript-%23007ACC.svg?style=for-the-badge&logo=typescript&logoColor=white) ![MongoDB](https://img.shields.io/badge/MongoDB-%23000.svg?style=for-the-badge&logo=MongoDB&logoColor=white&color=%2347A248) ![Heroku](https://img.shields.io/badge/heroku-%23430098.svg?style=for-the-badge&logo=heroku&logoColor=white) 
+
+The backend repository can be found **[here](https://github.com/antoninfaure/occupancy-epfl)**
+
 ## Frontend
 ![React](https://img.shields.io/badge/react-%2320232a.svg?style=for-the-badge&logo=react&logoColor=%2361DAFB) ![TypeScript](https://img.shields.io/badge/typescript-%23007ACC.svg?style=for-the-badge&logo=typescript&logoColor=white) ![SASS](https://img.shields.io/badge/SASS-hotpink.svg?style=for-the-badge&logo=SASS&logoColor=white) ![GitHub](https://img.shields.io/badge/GitHub-%23121011.svg?style=for-the-badge&logo=github&logoColor=white)
 
 The frontend repository can be found **[here](https://github.com/antoninfaure/occupancy-front)**
 
-## Backend
-![Flask](https://img.shields.io/badge/flask-%23000.svg?style=for-the-badge&logo=flask&logoColor=white) ![Heroku](https://img.shields.io/badge/heroku-%23430098.svg?style=for-the-badge&logo=heroku&logoColor=white)
+## Scraper
+ ![Python](https://img.shields.io/badge/Python-%23000.svg?style=for-the-badge&logo=Python&logoColor=white&color=%233776AB) ![MongoDB](https://img.shields.io/badge/MongoDB-%23000.svg?style=for-the-badge&logo=MongoDB&logoColor=white&color=%2347A248) ![GitHub](https://img.shields.io/badge/GitHub-%23121011.svg?style=for-the-badge&logo=github&logoColor=white)
 
-The current repository is for the backend, which is a Flask webapp used as a REST API, and hosted on Heroku.
+The current repository is for the scraper, which is a set of Python scripts that interacts with MongoDB, using GitHub CI/CD for cron jobs.
 
-### Run
+### Setup
 
-In order to run this project, you must have **[Flask](https://flask.palletsprojects.com/en/2.3.x/)** installed.
-
-1. Install the required dependencies:
+To install the dependencies run:
 ```
 pip install -r requirements.txt
 ```
-2. Configure the environnement variables in the `.env` file
 
-3. Launch the Flask application:
+And then set the environnement variables for the DB in `.env`.
+
+### Run
+
+#### Before the start of a semester
+
+Before each start of a semester, the DB needs to update the studyplans and courses details.
+
+To do so you, or a cron job, can run the script: 
 ```
-flask run
-```
-
-You can now go to [localhost:5000](http://localhost:5000) to see the page.
-
-### Data Scraping
-
-To scrap the data you just need to configure the semesters (names, dates, types) in the `scrap.py` file and then run:
-```
-python scrap.py
+python update_courses.py
 ```
 
+#### On a weekly basis (or more)
+
+Since edu.epfl.ch can change a lot during the first weeks for lots of reasons, the schedules needs to be updated accordingly.
+
+To do so you, or a cron job, can run the script: 
+```
+python update_schedules.py
+```
+
+It will find the current or next semester and then proceed to scrape its courses schedules and update them accordingly.
 
 
 ## ER Model
@@ -57,48 +68,18 @@ erDiagram
     COURSE_BOOKING }o--|| ROOM : "occupies"
     COURSE_BOOKING }o--|| COURSE_SCHEDULE : "is for (if course-related)"
     COURSE ||--o{ COURSE_SCHEDULE : "has"
-    TEACH_IN }o--|| COURSE : "relates to"
     EVENT_BOOKING }o--|| ROOM : "occupies"
-    TEACHER ||--o{ TEACH_IN: "instructs"
+    TEACHER }o--o{ COURSE: "teach in"
     COURSE ||--o{ PLANNED_IN : "is included in"
     STUDYPLAN ||--o{ PLANNED_IN : "consists of"
     STUDYPLAN }o--|| SEMESTER : "runs during"
-    ETU_UNIT ||--o{ STUDYPLAN : "is composed of"
-    EVENT_SCHEDULE }o--|| ROLE : "booked"
-    ROLE }o--|{ USER : "has role"
-    ROLE }o--|{ UNIT : "in unit"
-    ROOM }|--o{ MANAGED_BY : "managed by"
-    MANAGED_BY }o--|{ ROLE : "manages"
-
-    UNIT {
-      string name
-      bool available
-    }
-
-    ROLE {
-        int user_id
-        int unit_id
-        int accred
-        string name
-        bool available
-    }
-
-    MANAGED_BY {
-      int role_id
-      int room_id
-      int accred
-      bool available
-    }
-
-
+    UNIT ||--o{ STUDYPLAN : "is composed of"
 
     COURSE_BOOKING {
         int schedule_id FK
         int room_id FK
         bool available
     }
-
-
 
     EVENT_SCHEDULE {
         int role_id FK
@@ -153,7 +134,7 @@ erDiagram
         bool available
     }
 
-    ETU_UNIT {
+    UNIT {
         string name
         string code
         string promo
@@ -172,7 +153,6 @@ erDiagram
         int room_id FK
         bool available
     }
-
 ```
 
 ## Contributing
