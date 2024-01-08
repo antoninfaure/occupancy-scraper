@@ -34,7 +34,7 @@ MAP_ROOMS = {
     'CE2': 'CE12',
     'CE3': 'CE13',
     'RLC E1 240': 'RLCE1240',
-    'STCC - Cloud C': 'STCC 7 8025'
+    'STCC - Cloud C': 'STCC78025'
 }
 
 MAP_PROMOS = {

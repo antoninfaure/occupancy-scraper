@@ -4,6 +4,8 @@ import re
 from config import *
 from datetime import datetime, timedelta
 from tqdm import tqdm
+from pyproj import Transformer as pyproj_Transformer
+import numpy as np
 
 ### GET ALL COURSES URLS ###
 def get_all_courses_url():
@@ -933,10 +935,23 @@ def list_plan_rooms():
         '''
         rooms_xml = []
         for level in tqdm(range(-3, 8)):
-            level_rooms_xml = list_level_rooms((2533565.4081416847, 1152107.9784703811), (2532650.4135850836, 1152685.3502971812), level, max=5000)
+            level_rooms_xml = list_level_rooms((2533565.4081416847, 1152107.9784703811), (2532680.590, 1152904.181), level, max=5000)
             if (level_rooms_xml and len(level_rooms_xml) > 0):
                 rooms_xml += level_rooms_xml
         return rooms_xml
+
+    def compute_coordinates(coordinates_string):
+        coordinates_split = coordinates_string.split()
+        coordinates = [(float(coordinates_split[i]), float(coordinates_split[i+1])) for i in range(0, len(coordinates_split), 2)]
+
+        # Compute center coordinates
+        xs, ys = zip(*coordinates)
+        center_x, center_y = (np.mean(xs), np.mean(ys))
+
+        # Transform coordinates from MN95 (epsg:2056) to WGS84 (epsg:4326)
+        transformer = pyproj_Transformer.from_crs("epsg:2056", "epsg:4326")
+
+        return transformer.transform(center_x, center_y)
 
     def parse_room(room_xml):
         '''
@@ -944,11 +959,17 @@ def list_plan_rooms():
             Input:
                 - room_xml: the XML room object
             Output:
-                - room: the parsed room object (name, type)
+                - room: the parsed room object (name, type, coordinates, link)
         '''
         room_name = BeautifulSoup(room_xml.find('ms:room_abr_link').text, 'html.parser').find('div', class_="room").text.replace(" ", "")
         room_type = room_xml.find('ms:room_uti_a').text
-        return { 'name': room_name, 'type': room_type }
+        room_link = BeautifulSoup(room_xml.find('ms:room_abr_link').text, 'html.parser').find('button', class_="clipboard").attrs['data-clipboard-text']
+
+        room_coordinates_string = room_xml.find('gml:posList').text
+        room_coordinates = compute_coordinates(room_coordinates_string)
+        
+
+        return { 'name': room_name, 'type': room_type, 'coordinates': room_coordinates, 'link': room_link }
     
     def parse_all_rooms(rooms_xml):
         '''
@@ -959,7 +980,7 @@ def list_plan_rooms():
                 - rooms: a list of parsed rooms objects (name, type)
         '''
         rooms_parsed = []
-        for room_xml in rooms_xml:
+        for room_xml in tqdm(rooms_xml, total=len(rooms_xml)):
             room = parse_room(room_xml)
             if (room == None):
                 continue
@@ -968,6 +989,8 @@ def list_plan_rooms():
         return rooms_parsed
     
     rooms_xml = list_all_levels_rooms()
+
+    print("Parsing rooms...")
     rooms = parse_all_rooms(rooms_xml)
 
     return rooms
@@ -999,19 +1022,27 @@ def create_rooms(db, schedules):
     }))
     print(f"Found {len(db_rooms)} rooms in database")
 
-    # Update the type of the rooms in the database if necessary
+    # Update the rooms type, coordinates and link in the database if necessary
     print("Updating rooms in database")
     for db_room in tqdm(db_rooms):
         db_room_name = db_room.get("name")
         db_room_type = db_room.get("type")
+        db_room_link = db_room.get("link")
+        db_room_coordinates = db_room.get("coordinates")
         if (db_room_name not in plan_rooms_names):
             # If the room is not on plan.epfl.ch, ignore it
             print(f"Room {db_room_name} not found on plan.epfl.ch")
             continue
+
+        # Find the room in plan data
         plan_room = [plan_room for plan_room in plan_rooms if plan_room.get("name") == db_room_name][0]
         plan_room_type = plan_room.get("type")
-        if (db_room_type != plan_room_type):
-            db.rooms.update_one({"name": db_room_name}, { "$set": { "type": plan_room_type }})
+        plan_room_link = plan_room.get("link")
+        plan_room_coordinates = plan_room.get("coordinates")
+
+        # Update it if necessary
+        if (db_room_type != plan_room_type or db_room_link != plan_room_link or db_room_coordinates != plan_room_coordinates):
+            db.rooms.update_one({"name": db_room_name}, { "$set": { "type": plan_room_type, "link": plan_room_link, "coordinates": plan_room_coordinates }})
 
     # List rooms to create
     db_rooms_names = [db_room.get("name") for db_room in db_rooms]
@@ -1022,14 +1053,17 @@ def create_rooms(db, schedules):
     new_rooms = []
     for room_name in tqdm(new_rooms_names):
         plan_room = [plan_room for plan_room in plan_rooms if plan_room.get("name") == room_name] 
-        if (plan_room is None):
-            room_type = "unknown"
-        elif (len(plan_room) == 0):
-            room_type = "unknown"
-        else:
+
+        room_link = None
+        room_coordinates = None
+        room_type = "unknown"
+
+        if (plan_room is not None and len(plan_room) != 0):
             room_type = plan_room[0].get("type", "unknown")
+            room_link = plan_room[0].get("link", None)
+            room_coordinates = plan_room[0].get("coordinates", None)
         
-        new_rooms.append({"name": room_name, "type": room_type, "available": True})
+        new_rooms.append({"name": room_name, "type": room_type, "available": True, "link": room_link, "coordinates": room_coordinates})
 
     if (len(new_rooms) == 0):
         print("No new rooms to create")
