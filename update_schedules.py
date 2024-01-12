@@ -25,6 +25,6 @@ utils.update_schedules(db, schedules)
 
 # Create bookings
 print("----- Create bookings -----")
-utils.create_courses_bookings(db, schedules)
+utils.create_courses_bookings(db, schedules=schedules)
 
 print("===== Done =====")

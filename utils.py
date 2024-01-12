@@ -67,7 +67,7 @@ def parse_course(url):
     language = soup.find('div', class_="course-summary").findAll('p')
     if len(language) > 2:
         language = language[2].text.split(':')
-        if len(language) > 1:
+        if 'Langue' in language[0] and len(language) > 1:
             language = language[1].strip()
         else:
             language = None
@@ -997,7 +997,7 @@ def list_plan_rooms():
 
 
 ### CREATE ROOMS ###
-def create_rooms(db, schedules):
+def create_rooms(db, schedules=[], rooms_names=[]):
     '''
         Create schedules in the database
         Input:
@@ -1005,8 +1005,14 @@ def create_rooms(db, schedules):
             - schedules: a list of schedules
     '''
 
-    # List all rooms in the schedules
-    rooms_names = list_rooms(schedules)
+    if (len(rooms_names) == 0 or type(rooms_names) != list):
+        if (len(schedules) == 0 or type(schedules) != list):
+            print("No schedules to create")
+            return
+
+        # List all rooms in the schedules
+        rooms_names = list_rooms(schedules)
+    
 
     # Find all rooms on plan.epfl.ch
     print("Getting rooms from plan.epfl.ch")
@@ -1058,12 +1064,17 @@ def create_rooms(db, schedules):
         room_coordinates = None
         room_type = "unknown"
 
+        # building is the characters before the first number
+        room_building = re.split(r'\d', room_name)[0]
+        # replace underscores or hyphens with spaces
+        room_building = re.sub(r'[-_]', ' ', room_building)
+        
         if (plan_room is not None and len(plan_room) != 0):
             room_type = plan_room[0].get("type", "unknown")
             room_link = plan_room[0].get("link", None)
             room_coordinates = plan_room[0].get("coordinates", None)
         
-        new_rooms.append({"name": room_name, "type": room_type, "available": True, "link": room_link, "coordinates": room_coordinates})
+        new_rooms.append({"name": room_name, "type": room_type, "available": True, "link": room_link, "coordinates": room_coordinates, "building": room_building})
 
     if (len(new_rooms) == 0):
         print("No new rooms to create")
