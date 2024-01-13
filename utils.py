@@ -1487,7 +1487,7 @@ def parse_all_rooms_events(rooms_names, start_date, end_date):
     date_ranges = split_date_range(start_date, end_date)
 
     for room_name in tqdm(rooms_names, total=len(rooms_names)):
-        for date_range in date_ranges:
+        for date_range in tqdm(date_ranges, total=len(date_ranges), leave=False):
             start_date = date_range[0].strftime('%Y-%m-%dT%H:%M:%S')
             end_date = date_range[1].strftime('%Y-%m-%dT%H:%M:%S')
             room_events = parse_room_events(room_name, start_date, end_date)
