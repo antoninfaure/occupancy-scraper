@@ -1337,11 +1337,13 @@ def query_force(query, max_retry=50):
 
 def parse_events(response):
     if not response or not response.text:
+        print('No response')
         return []
 
     events_line = response.text.split('0|')[1]
 
     if not events_line:
+        print('No events line')
         return []
 
     # Do a little bit of parsing
@@ -1363,6 +1365,12 @@ def parse_events(response):
 
     return filtered_events
 
+def parse_room_events(room_name, start_date, end_date):
+    response = query_force(lambda: query_room(room_name, start_date, end_date), max_retry=100)
+    if not response:
+        print(f'No response for {room_name}')
+        return []
+    return parse_events(response)
 
 def parse_next_week(room_name):
     start_date = datetime.now()
@@ -1383,7 +1391,7 @@ def query_room(room_name, start_date, end_date):
         'MIME Type': 'application/x-www-form-urlencoded; charset=UTF-8',
         '__EVENTTARGET': '',
         '__EVENTARGUMENT': '',
-        '__VIEWSTATE': ' /wEPDwUKMTM5ODM2NTk2OQ9kFgJmD2QWAgIFD2QWBAIBD2QWBgIBDw8WAh4EVGV4dAUEQkMwNGRkAgMPDxYCHgtfIURhdGFCb3VuZGdkZAIFDw8WBh4JVGFnRmllbGRzFQIEbmFtZQJpZB8BZx4JU3RhcnREYXRlBgAA5cHcD9wIZGQCAw8PFgIfAAUEMjAyNGRkZIzwPLIaADoqLSzNQVpFnNZgTEoeLSpqtdYWaAYC8nMA',
+        '__VIEWSTATE': ' /wEPDwUKMTM5ODM2NTk2OQ9kFgJmD2QWAgIFD2QWBAIBD2QWBgIBDw8WAh4EVGV4dAUEQkMwNGRkAgMPDxYCHgtfIURhdGFCb3VuZGdkZAIFDw8WBh4JVGFnRmllbGRzFQIEbmFtZQJpZB8BZx4JU3RhcnREYXRlBgAA5cHcD9wIZGQCAw8PFgIfAAUEMjAyNGRkZNUaK/g/4ozyh2R4kbzza6iy8lj2Vwt/Bg96HOb+Hjxn',
         '__VIEWSTATEGENERATOR': 'CC8E5E3B',
         '__CALLBACKID': 'ctl00$ContentPlaceHolder1$DayPilotCalendar1',
         '__CALLBACKPARAM': """JSON{"action":"Command","parameters":{"command":"navigate"},"data":{"start":\"""" + start_date + '","end":"' + end_date + """\","days":7},"header":{"control":"dpc","id":"ContentPlaceHolder1_DayPilotCalendar1","clientState":{},"columns":[{"Value":null,"Name":"08.01.2024","ToolTip":null,"Date":"2024-01-08T00:00:00","Children":[]},{"Value":null,"Name":"09.01.2024","ToolTip":null,"Date":"2024-01-09T00:00:00","Children":[]},{"Value":null,"Name":"10.01.2024","ToolTip":null,"Date":"2024-01-10T00:00:00","Children":[]},{"Value":null,"Name":"11.01.2024","ToolTip":null,"Date":"2024-01-11T00:00:00","Children":[]},{"Value":null,"Name":"12.01.2024","ToolTip":null,"Date":"2024-01-12T00:00:00","Children":[]},{"Value":null,"Name":"13.01.2024","ToolTip":null,"Date":"2024-01-13T00:00:00","Children":[]},{"Value":null,"Name":"14.01.2024","ToolTip":null,"Date":"2024-01-14T00:00:00","Children":[]}],"days":7,"startDate":"2024-01-08T00:00:00","cellDuration":30,"heightSpec":"BusinessHours","businessBeginsHour":7,"businessEndsHour":20,"viewType":"Days","dayBeginsHour":0,"dayEndsHour":0,"headerLevels":1,"backColor":"White","nonBusinessBackColor":"White","eventHeaderVisible":true,"timeFormat":"Clock12Hours","showAllDayEvents":true,"tagFields":["name","id"],"hourNameBackColor":"#F3F3F9","hourFontFamily":"Tahoma,Verdana,Sans-serif","hourFontSize":"16pt","hourFontColor":"#42658C","selected":"","hashes":{"callBack":"OV+dLKlTRpwauhSy/FtI1aLjgoc=","columns":"IhqLqz4fVg5t3JL4XXO3ZfZvJRA=","events":"NqagU2+lBsSSGcEgjzHvWAy3Rds=","colors":"3caslJYaCfbLdelD4+2YHVvrvn8=","hours":"K+iMpCQsduglOsYkdIUQZQMtaDM=","corner":"0XBQYL2rjFh+nn9As5pzf4+hWqg="}}}"""
@@ -1400,3 +1408,117 @@ def query_room(room_name, start_date, end_date):
     response = requests.post('https://ewa.epfl.ch/room/Default.aspx', headers=headers, data=data)
 
     return response
+
+
+def populate_events_room(db, parsed_events):
+    db_rooms = list(db.rooms.find({
+        'available': True
+    }))
+
+    new_events = []
+    for event in tqdm(parsed_events, total=len(parsed_events)):
+        room_name = event['room']
+        room = list(filter(lambda x: x['name'] == room_name, db_rooms))
+        if len(room) == 0:
+            print(f"Room {room_name} not found in db")
+            continue
+        room = room[0]
+        new_event = event
+        new_event['room'] = room['_id']
+        new_events.append(new_event)
+
+    return new_events
+
+def create_event_bookings(db, parsed_events):
+    db_event_bookings = list(db.event_bookings.find({
+        'available': True
+    }))
+    new_bookings = []
+    for event in tqdm(parsed_events, total=len(parsed_events)):
+        found = False
+        for db_booking in db_event_bookings:
+            if event['room'] == db_booking['room_id'] and \
+                event['start_datetime'] == db_booking['start_datetime'] and \
+                event['end_datetime'] == db_booking['end_datetime'] and \
+                event['name'] == db_booking['name']:
+                found = True
+                break
+
+        if not found:
+            new_booking = {
+                'room_id': event['room'],
+                'start_datetime': event['start_datetime'],
+                'end_datetime': event['end_datetime'],
+                'name': event['name'],
+                'label': event['label'],
+                'available': True
+            }
+            new_bookings.append(new_booking)
+
+    if len(new_bookings) == 0:
+        print("No new bookings to create")
+        return None
+    print(f"Creating {len(new_bookings)} new bookings")
+    db.event_bookings.insert_many(new_bookings)
+
+def split_date_range(start_date, end_date):
+    """
+    Split a date range into a list of date ranges, each starting at the beginning of a week and ending at the end of a week
+    """
+    date_ranges = []
+    
+    current_date = datetime.strptime(start_date, '%Y-%m-%dT%H:%M:%S')
+
+    while current_date <= datetime.strptime(end_date, '%Y-%m-%dT%H:%M:%S'):
+        # Find the beginning of the week
+        begin_of_week = current_date - timedelta(days=current_date.weekday())
+        # Find the end of the week
+        end_of_week = begin_of_week + timedelta(days=7)
+        # Add the date range to the list
+        date_ranges.append((begin_of_week, end_of_week))
+        # Move to the next week
+        current_date = end_of_week + timedelta(days=1)
+    return date_ranges
+
+
+def parse_all_rooms_events(rooms_names, start_date, end_date):
+    parsed_events = []
+
+    date_ranges = split_date_range(start_date, end_date)
+
+    for room_name in tqdm(rooms_names, total=len(rooms_names)):
+        for date_range in date_ranges:
+            start_date = date_range[0].strftime('%Y-%m-%dT%H:%M:%S')
+            end_date = date_range[1].strftime('%Y-%m-%dT%H:%M:%S')
+            room_events = parse_room_events(room_name, start_date, end_date)
+            for event in room_events:
+                new_event = {
+                    'room': room_name,
+                    'start_datetime': datetime.strptime(event['Start'], '%Y-%m-%dT%H:%M:%S'),
+                    'end_datetime': datetime.strptime(event['End'], '%Y-%m-%dT%H:%M:%S'),
+                    'name': event['Text'],
+                    'label': 'event',
+                    'available': True
+                }
+                parsed_events.append(new_event)
+
+    return parsed_events
+
+def parse_all_rooms_next_week(rooms_names):
+    parsed_events = []
+    for room_name in tqdm(rooms_names, total=len(rooms_names)):
+        room_events = parse_next_week(room_name)
+        for event in room_events:
+            new_event = {
+                'room': room_name,
+                'start_datetime': datetime.strptime(event['Start'], '%Y-%m-%dT%H:%M:%S'),
+                'end_datetime': datetime.strptime(event['End'], '%Y-%m-%dT%H:%M:%S'),
+                'name': event['Text'],
+                'label': 'event',
+                'available': True
+            }
+            parsed_events.append(new_event)
+
+    return parsed_events
+
+
