@@ -19,6 +19,10 @@ room_validator = {
                 "bsonType": "int",
                 "description": "must be an integer"
             },
+            'level': {
+                "bsonType": "int",
+                "description": "must be an integer"
+            },
             "building": {
                 "bsonType": "string",
                 "description": "must be a string"
