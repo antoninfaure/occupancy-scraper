@@ -148,21 +148,6 @@ def init(db):
         
         try:
             db.command("collMod", "event_bookings", validator=event_booking_validator)
-            db.event_bookings.create_index([("schedule_id", pymongo.ASCENDING), ("room_id", pymongo.ASCENDING)], name="booking_unique", unique=True)
-        except Exception as e:
-            print(e)
-
-    def init_event_schedules_collection():
-        try:
-            db.create_collection("event_schedules")
-            print("Created collection event_schedules")
-        except Exception as e:
-            if str(e) != "collection event_schedules already exists":
-                print(e)
-            return
-        
-        try:
-            db.command("collMod", "event_schedules", validator=event_schedule_validator)
         except Exception as e:
             print(e)
     
@@ -184,7 +169,6 @@ def init(db):
 
         # Event collections
         init_event_bookings_collection(),
-        init_event_schedules_collection()
     ]
 
     for init in inits:

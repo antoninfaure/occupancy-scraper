@@ -118,10 +118,10 @@ course_schedule_validator = {
     }
 }
 
-event_schedule_validator = {
+event_booking_validator = {
     "$jsonSchema": {
         "bsonType": "object",
-        "required": ["start_datetime", "end_datetime", "available", "label", "name"],
+        "required": ["start_datetime", "end_datetime", "room_id", "available", "label", "name"],
         "properties": {
             "start_datetime": {
                 "bsonType": "date",
@@ -130,6 +130,10 @@ event_schedule_validator = {
             "end_datetime": {
                 "bsonType": "date",
                 "description": "must be a date and is required"
+            },
+            "room_id": {
+                "bsonType": "objectId",
+                "description": "must be an objectId and is required"
             },
             "available": {
                 "bsonType": "bool",
@@ -171,28 +175,6 @@ course_booking_validator = {
         }
     }
 }
-
-event_booking_validator = {
-    "$jsonSchema": {
-        "bsonType": "object",
-        "required": ["schedule_id", "room_id", "available"],
-        "properties": {
-            "schedule_id": {
-                "bsonType": "objectId",
-                "description": "must be an objectId and is required"
-            },
-            "room_id": {
-                "bsonType": "objectId",
-                "description": "must be an objectId and is required"
-            },
-            "available": {
-                "bsonType": "bool",
-                "description": "must be a bool and is required"
-            }
-        }
-    }
-}
-
 
 studyplan_validator = {
     "$jsonSchema": {
