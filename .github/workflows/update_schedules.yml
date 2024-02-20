@@ -22,8 +22,15 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+
+      - name: set up environment
+        run: echo "$DB_NAME"
+        env:
+          DB_NAME: ${{ secrets.DB_NAME }}
         
       - name: execute py script # run update_schedules.py
         run: python update_schedules.py
+        env:
+          DB_NAME: ${{ secrets.DB_NAME }}
         
       
