@@ -1,0 +1,29 @@
+name: cron_update_schedules
+
+on:
+  schedule: # every day at 21:00 between 14 Feb and 14 Mar
+    - cron: '0 21 * 2-3 *'
+  workflow_dispatch: # manually trigger the workflow
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: checkout repo content
+        uses: actions/checkout@v3 # checkout the repository content to github runner.
+        
+      - name: setup python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+          
+      - name: install python packages
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+        
+      - name: execute py script # run update_schedules.py
+        run: python update_schedules.py
+        
+      

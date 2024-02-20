@@ -7,6 +7,8 @@ from tqdm import tqdm
 from pyproj import Transformer as pyproj_Transformer
 import numpy as np
 import json
+import multiprocessing
+import os
 
 ### GET ALL COURSES URLS ###
 def get_all_courses_url():
@@ -574,10 +576,10 @@ def get_current_or_next_semester(db, semester_type=None):
     # Get the current semester
     semester = db.semesters.find_one({
         "start_date": {
-            "$gte": today
+            "$lte": today
         },
         "end_date": {
-            "$lte": today
+            "$gte": today
         },
         "type": {
             "$ne": "year"
@@ -639,6 +641,9 @@ def get_course_schedule(url):
         edoc = True
     else:
         schedule_parsed = parse_schedule(soup)
+
+    if (schedule_parsed == None):
+        return None, edoc
 
     return schedule_parsed, edoc
 
@@ -820,6 +825,35 @@ def create_semester_schedule(schedule, db_semester):
     return semester_schedule
     
 
+def process_course_schedules(course, db_courses_semester_codes, semester):
+    course_edu_url = course.get('edu_url')
+    if (course_edu_url == None):
+        return None
+
+    result = get_course_schedule(course_edu_url)
+    if (result == None):
+        print(f'No schedule found for {course_edu_url}')
+        return None
+    schedule, edoc = result
+
+    if (schedule == None):
+        return None
+
+    if (edoc == False):
+        if (course.get('code') not in db_courses_semester_codes):
+            return None
+        schedule = create_semester_schedule(schedule, semester)
+
+    # Add course_id to schedule
+    for event in schedule:
+        event['course_id'] = course['_id']
+
+    return schedule
+
+def process_course_schedules_start(args):
+    return process_course_schedules(*args)
+
+    
 def find_courses_schedules(db):
 
     semester = get_current_or_next_semester(db)
@@ -827,7 +861,6 @@ def find_courses_schedules(db):
 
     current_year = get_current_or_next_semester(db, 'year')
     current_year_courses_ids = find_semester_courses_ids(db, current_year)
-
 
     print('Getting courses from DB...')
     db_courses_semester = list(db.courses.find({
@@ -853,32 +886,16 @@ def find_courses_schedules(db):
     }))
 
     schedules = []
+    num_processes = multiprocessing.cpu_count()
+    with multiprocessing.Pool(num_processes) as pool:
+        processed_schedules = tqdm(pool.imap(process_course_schedules_start, [(course, db_courses_semester_codes, semester) for course in db_courses]), total=len(db_courses), desc="Processing courses schedules")
 
-    for course in tqdm(db_courses, total=len(db_courses)):
-        course_edu_url = course.get('edu_url')
-        if (course_edu_url == None):
-            continue
-
-        schedule, edoc = get_course_schedule(course_edu_url)
-
-        if (schedule == None):
-            continue
-
-        if (edoc == False):
-            if (course.get('code') not in db_courses_semester_codes):
-                continue
-            schedule = create_semester_schedule(schedule, semester)
-
-        # Add course_id to schedule
-        for event in schedule:
-            event['course_id'] = course['_id']
-
-        schedules += schedule
-
-        if (course.get('code') == 'COM-406'):
-            print(schedule)
+        for schedule in processed_schedules:
+            if (schedule != None):
+                schedules += schedule
 
     return schedules
+
 
 ### LIST ALL ROOMS ###
 def list_rooms(schedules):
@@ -1157,12 +1174,17 @@ def update_schedules(db, schedules):
         }
     }))
 
+    # remove MAN courses from db_planned_in
+    man_courses_ids = get_man_courses_ids(db)
+    db_planned_in_ids = [planned_in['course_id'] for planned_in in db_planned_in]
+    db_planned_in_ids = [course_id for course_id in db_planned_in_ids if course_id not in man_courses_ids]
+
     # Find schedules with course in the studyplans
     print('Getting schedules from DB...')
     db_schedules = list(db.course_schedules.find({
         'available': True,
         'course_id': {
-            '$in': [planned_in['course_id'] for planned_in in db_planned_in]
+                '$in': db_planned_in_ids,      
         }
     }))
     print(f'- {len(db_schedules)} schedules found')
@@ -1198,7 +1220,7 @@ def update_schedules(db, schedules):
     # delete remaining db_schedules
     print('Deleting schedules not in incoming schedules...')
     try:
-        db.schedules.update_many({
+        db.course_schedules.update_many({
             '_id': {
                 '$in': [db_schedule.get('_id') for db_schedule in db_schedules]
             }
@@ -1222,6 +1244,28 @@ def update_schedules(db, schedules):
         print(f'- {len(new_schedules)} schedules created')
     except Exception as e:
         print(e)
+
+def get_man_courses_ids(db):
+    semester = get_current_or_next_semester(db, 'spring')
+
+    man_units = list(db.units.find({
+        'section': 'MAN'
+    }))
+
+    man_studyplans = list(db.studyplans.find({
+        'unit_id': {
+            '$in': [unit['_id'] for unit in man_units],
+        },
+        'semester_id': semester['_id']
+    }))
+
+    man_planned_in = list(db.planned_in.find({
+        'studyplan_id': {
+            '$in': [studyplan['_id'] for studyplan in man_studyplans]
+        }
+    }))
+
+    return list(set([planned['course_id'] for planned in man_planned_in]))
 
 def create_courses_bookings(db, schedules):
     db_rooms = list(db.rooms.find({
@@ -1281,7 +1325,7 @@ def create_courses_bookings(db, schedules):
                 'available': True
             }
 
-            new_bookings.append(booking)
+            new_bookings.append(booking)    
 
     # remove bookings with a schedule_id not in db_schedules
     print('Removing bookings without schedule...')
@@ -1330,6 +1374,8 @@ def create_courses_bookings(db, schedules):
 def query_force(query, max_retry=50):
     for _ in range(max_retry):
         response = query()
+        if not response:
+            continue
         if response.status_code == 200:
             return response
     return None
@@ -1341,6 +1387,8 @@ def parse_events(response):
         return []
 
     events_line = response.text.split('0|')[1]
+
+    print(response.text)
 
     if not events_line:
         print('No events line')
@@ -1366,7 +1414,17 @@ def parse_events(response):
     return filtered_events
 
 def parse_room_events(room_name, start_date, end_date):
-    response = query_force(lambda: query_room(room_name, start_date, end_date), max_retry=100)
+    asp_net_cookie = get_asp_net_cookie(room_name)
+    headers = {
+        'Connection': 'keep-alive',
+        'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
+        'Cookie': f'ASP.NET_SessionId={asp_net_cookie}; petitpois=dismiss;',
+        'Origin': 'https://ewa.epfl.ch',
+        'Referer': f'https://ewa.epfl.ch/room/Default.aspx?room={room_name}',
+    }
+    
+    response = query_force(lambda: query_room(room_name, start_date, end_date, headers), max_retry=200)
+  
     if not response:
         print(f'No response for {room_name}')
         return []
@@ -1380,30 +1438,104 @@ def parse_next_week(room_name):
     end_date = start_date + timedelta(days=7)
     start_date = start_date.strftime("%Y-%m-%dT%H:%M:%S")
     end_date = end_date.strftime("%Y-%m-%dT%H:%M:%S")
-    response = query_force(lambda: query_room(room_name, start_date, end_date), max_retry=100)
+
+    asp_net_cookie = get_asp_net_cookie(room_name)
+    headers = {
+        'Connection': 'keep-alive',
+        'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
+        'Cookie': f'ASP.NET_SessionId={asp_net_cookie}; petitpois=dismiss;',
+        'Origin': 'https://ewa.epfl.ch',
+        'Referer': f'https://ewa.epfl.ch/room/Default.aspx?room={room_name}',
+    }
+    
+    response = query_force(lambda: query_room(room_name, start_date, end_date, headers), max_retry=100)
     if not response:
         print(f'No response for {room_name}')
         return []
     return parse_events(response)
 
-def query_room(room_name, start_date, end_date):
+def get_asp_net_cookie(room_name):
+    response = query_force(lambda: requests.get(f'https://ewa.epfl.ch/room/Default.aspx?room={room_name}'), max_retry=100)
+
+    if not response:
+        print('No response')
+        return None
+    if response.status_code == 200:
+        cookies = response.cookies
+        return cookies.get('ASP.NET_SessionId', None)
+    return None
+
+def query_room(room_name, start_date, end_date, headers):
+
+    # generate columns values for the request (for the 7 days starting from start_date)
+    columns = []
+    start_datetime = datetime.strptime(start_date, '%Y-%m-%dT%H:%M:%S')
+    for i in range(7):
+        day = start_datetime + timedelta(days=i)
+        columns.append({
+            "Value": None,
+            "Name": day.strftime('%d.%m.%Y'),
+            "ToolTip": None,
+            "Date": day.strftime('%Y-%m-%dT00:00:00'),
+            "Children": []
+        })
+
+    callback_params = {
+        "action": "Command",
+        "parameters": {
+            "command": "navigate"
+        },
+        "data": {
+            "start": start_date,
+            "end": end_date,
+            "days": 7
+        },
+        "header": {
+            "control": "dpc",
+            "id": "ContentPlaceHolder1_DayPilotCalendar1",
+            "clientState": {},
+            "columns": columns,
+            "days": 7,
+            "startDate": start_date,
+            "cellDuration": 30,
+            "heightSpec": "BusinessHours",
+            "businessBeginsHour": 7,
+            "businessEndsHour": 20,
+            "viewType": "Days",
+            "dayBeginsHour": 0,
+            "dayEndsHour": 0,
+            "headerLevels": 1,
+            "backColor": "White",
+            "nonBusinessBackColor": "White",
+            "eventHeaderVisible": True,
+            "timeFormat": "Clock12Hours",
+            "showAllDayEvents": True,
+            "tagFields": ["name", "id"],
+            "hourNameBackColor": "#F3F3F9",
+            "hourFontFamily": "Tahoma,Verdana,Sans-serif",
+            "hourFontSize": "16pt",
+            "hourFontColor": "#42658C",
+            "selected": "",
+            "hashes": {
+                "callBack": "OV+dLKlTRpwauhSy/FtI1aLjgoc=",
+                "columns": "IhqLqz4fVg5t3JL4XXO3ZfZvJRA=",
+                "events": "NqagU2+lBsSSGcEgjzHvWAy3Rds=",
+                "colors": "3caslJYaCfbLdelD4+2YHVvrvn8=",
+                "hours": "K+iMpCQsduglOsYkdIUQZQMtaDM=",
+                "corner": "0XBQYL2rjFh+nn9As5pzf4+hWqg="
+            }
+        }
+    }
+
     data = {
         'MIME Type': 'application/x-www-form-urlencoded; charset=UTF-8',
         '__EVENTTARGET': '',
         '__EVENTARGUMENT': '',
-        '__VIEWSTATE': ' /wEPDwUKMTM5ODM2NTk2OQ9kFgJmD2QWAgIFD2QWBAIBD2QWBgIBDw8WAh4EVGV4dAUEQkMwNGRkAgMPDxYCHgtfIURhdGFCb3VuZGdkZAIFDw8WBh4JVGFnRmllbGRzFQIEbmFtZQJpZB8BZx4JU3RhcnREYXRlBgAA5cHcD9wIZGQCAw8PFgIfAAUEMjAyNGRkZNUaK/g/4ozyh2R4kbzza6iy8lj2Vwt/Bg96HOb+Hjxn',
+        '__VIEWSTATE': '/wEPDwUKMTM5ODM2NTk2OQ9kFgJmD2QWAgIFD2QWBAIBD2QWBgIBDw8WAh4EVGV4dAUEQkMwMWRkAgMPDxYCHgtfIURhdGFCb3VuZGdkZAIFDw8WBh4JVGFnRmllbGRzFQIEbmFtZQJpZB8BZx4JU3RhcnREYXRlBgCAPrfdMNwIZGQCAw8PFgIfAAUEMjAyNGRkZBcDZBZ3ATHldACedIUzjN5kMtI2cxXWLlr1+Lr9oP0L',
         '__VIEWSTATEGENERATOR': 'CC8E5E3B',
         '__CALLBACKID': 'ctl00$ContentPlaceHolder1$DayPilotCalendar1',
-        '__CALLBACKPARAM': """JSON{"action":"Command","parameters":{"command":"navigate"},"data":{"start":\"""" + start_date + '","end":"' + end_date + """\","days":7},"header":{"control":"dpc","id":"ContentPlaceHolder1_DayPilotCalendar1","clientState":{},"columns":[{"Value":null,"Name":"08.01.2024","ToolTip":null,"Date":"2024-01-08T00:00:00","Children":[]},{"Value":null,"Name":"09.01.2024","ToolTip":null,"Date":"2024-01-09T00:00:00","Children":[]},{"Value":null,"Name":"10.01.2024","ToolTip":null,"Date":"2024-01-10T00:00:00","Children":[]},{"Value":null,"Name":"11.01.2024","ToolTip":null,"Date":"2024-01-11T00:00:00","Children":[]},{"Value":null,"Name":"12.01.2024","ToolTip":null,"Date":"2024-01-12T00:00:00","Children":[]},{"Value":null,"Name":"13.01.2024","ToolTip":null,"Date":"2024-01-13T00:00:00","Children":[]},{"Value":null,"Name":"14.01.2024","ToolTip":null,"Date":"2024-01-14T00:00:00","Children":[]}],"days":7,"startDate":"2024-01-08T00:00:00","cellDuration":30,"heightSpec":"BusinessHours","businessBeginsHour":7,"businessEndsHour":20,"viewType":"Days","dayBeginsHour":0,"dayEndsHour":0,"headerLevels":1,"backColor":"White","nonBusinessBackColor":"White","eventHeaderVisible":true,"timeFormat":"Clock12Hours","showAllDayEvents":true,"tagFields":["name","id"],"hourNameBackColor":"#F3F3F9","hourFontFamily":"Tahoma,Verdana,Sans-serif","hourFontSize":"16pt","hourFontColor":"#42658C","selected":"","hashes":{"callBack":"OV+dLKlTRpwauhSy/FtI1aLjgoc=","columns":"IhqLqz4fVg5t3JL4XXO3ZfZvJRA=","events":"NqagU2+lBsSSGcEgjzHvWAy3Rds=","colors":"3caslJYaCfbLdelD4+2YHVvrvn8=","hours":"K+iMpCQsduglOsYkdIUQZQMtaDM=","corner":"0XBQYL2rjFh+nn9As5pzf4+hWqg="}}}"""
+        '__CALLBACKPARAM': """JSON{"action":"Command","parameters":{"command":"navigate"},"data":{"start":"2024-02-26T00:00:00","end":"2024-03-04T00:00:00","days":7},"header":{"control":"dpc","id":"ContentPlaceHolder1_DayPilotCalendar1","clientState":{},"columns":[{"Value":null,"Name":"19.02.2024","ToolTip":null,"Date":"2024-02-19T00:00:00","Children":[]},{"Value":null,"Name":"20.02.2024","ToolTip":null,"Date":"2024-02-20T00:00:00","Children":[]},{"Value":null,"Name":"21.02.2024","ToolTip":null,"Date":"2024-02-21T00:00:00","Children":[]},{"Value":null,"Name":"22.02.2024","ToolTip":null,"Date":"2024-02-22T00:00:00","Children":[]},{"Value":null,"Name":"23.02.2024","ToolTip":null,"Date":"2024-02-23T00:00:00","Children":[]},{"Value":null,"Name":"24.02.2024","ToolTip":null,"Date":"2024-02-24T00:00:00","Children":[]},{"Value":null,"Name":"25.02.2024","ToolTip":null,"Date":"2024-02-25T00:00:00","Children":[]}],"days":7,"startDate":"2024-02-19T00:00:00","cellDuration":30,"heightSpec":"BusinessHours","businessBeginsHour":7,"businessEndsHour":20,"viewType":"Days","dayBeginsHour":0,"dayEndsHour":0,"headerLevels":1,"backColor":"White","nonBusinessBackColor":"White","eventHeaderVisible":true,"timeFormat":"Clock12Hours","showAllDayEvents":true,"tagFields":["name","id"],"hourNameBackColor":"#F3F3F9","hourFontFamily":"Tahoma,Verdana,Sans-serif","hourFontSize":"16pt","hourFontColor":"#42658C","selected":"","hashes":{"callBack":"PFfUEJ3wrfDg2Gfp/oBSL89g8Kc=","columns":"bzP1mnnwN+umsglYKroAi3JEFP4=","events":"xVFNXcegBTUqJf6sHwhHjX6e88g=","colors":"u6JkuOn4xmGT35AnGNQ0dmPOOqk=","hours":"K+iMpCQsduglOsYkdIUQZQMtaDM=","corner":"0XBQYL2rjFh+nn9As5pzf4+hWqg="}}}""",
     }
-
-    headers = {
-        'Connection': 'keep-alive',
-        'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
-        'Cookie': 'ASP.NET_SessionId=zgzd3w4j3wosf4dkojjpqims; petitpois=dismiss;',
-        'Origin': 'https://ewa.epfl.ch',
-        'Referer': f'https://ewa.epfl.ch/room/Default.aspx?room={room_name}',
-       }
 
     response = requests.post('https://ewa.epfl.ch/room/Default.aspx', headers=headers, data=data)
 
@@ -1418,14 +1550,28 @@ def populate_events_room(db, parsed_events):
     new_events = []
     for event in tqdm(parsed_events, total=len(parsed_events)):
         room_name = event['room']
-        room = list(filter(lambda x: x['name'] == room_name, db_rooms))
-        if len(room) == 0:
-            print(f"Room {room_name} not found in db")
-            continue
-        room = room[0]
-        new_event = event
-        new_event['room'] = room['_id']
-        new_events.append(new_event)
+        if room_name in MAP_ROOMS:
+            room_name = MAP_ROOMS[room_name]
+
+        if isinstance(room_name, list):
+            for room_name_sub in room_name:
+                room = list(filter(lambda x: x['name'] == room_name_sub, db_rooms))
+                if len(room) == 0:
+                    print(f"Room {room_name_sub} not found in db")
+                    continue
+                room = room[0]
+                new_event = event
+                new_event['room'] = room['_id']
+                new_events.append(new_event)
+        else:
+            room = list(filter(lambda x: x['name'] == room_name, db_rooms))
+            if len(room) == 0:
+                print(f"Room {room_name} not found in db")
+                continue
+            room = room[0]
+            new_event = event
+            new_event['room'] = room['_id']
+            new_events.append(new_event)
 
     return new_events
 

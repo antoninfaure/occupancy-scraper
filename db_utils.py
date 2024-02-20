@@ -73,7 +73,7 @@ def init(db):
         
         try:
             db.command("collMod", "course_schedules", validator=course_schedule_validator)
-            db.course_schedules.create_index([("course_id", pymongo.ASCENDING), ("start_datetime", pymongo.ASCENDING), ("end_datetime", pymongo.ASCENDING)], name="schedule_unique", unique=True)
+            db.course_schedules.create_index([("course_id", pymongo.ASCENDING), ("start_datetime", pymongo.ASCENDING), ("end_datetime", pymongo.ASCENDING), ("label", pymongo.ASCENDING)], name="schedule_unique", unique=True)
         except Exception as e:
             print(e)
 
