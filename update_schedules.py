@@ -9,6 +9,13 @@ from bson.objectid import ObjectId
 # Connect to MongoDB
 client = MongoClient(f"mongodb+srv://{DB_USER}:{DB_PASSWORD}@{DB_URL}/?retryWrites=true&w=majority")
 db = client[DB_NAME]
+# if connected, print success message
+try:
+    # The ismaster command is cheap and does not require auth.
+    client.admin.command('ismaster')
+    print("Connected to MongoDB")
+except ConnectionFailure:
+   print("Server not available")
 db_utils.init(db)
 
 # Get schedules from edu.epfl.ch for the current or next semester
