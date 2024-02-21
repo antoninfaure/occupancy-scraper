@@ -1284,6 +1284,7 @@ def create_courses_bookings(db, schedules):
 
     print('Filtering bookings....')
     new_bookings = []
+    bookings_to_remove = []
     for schedule in tqdm(schedules, total=len(schedules)):
         db_schedule = None
         for db_item in db_schedules:
@@ -1298,7 +1299,9 @@ def create_courses_bookings(db, schedules):
 
         if (db_schedule == None):
             continue
-
+        
+            
+        schedule_rooms = []
         for room in schedule['rooms']:
             db_room = list(filter(lambda db_room: db_room['name'] == room, db_rooms))
 
@@ -1306,6 +1309,22 @@ def create_courses_bookings(db, schedules):
                 continue
             db_room = db_room[0]
 
+            schedule_rooms.append(db_room)
+
+        # check for rooms in db_rooms not in schedule['rooms'] (to remove)
+        db_schedule_bookings = list(filter(lambda db_booking: db_booking.get('schedule_id') == db_schedule['_id'], db_bookings))
+        for db_schedule_booking in db_schedule_bookings:
+            room_id = db_schedule_booking.get('room_id')
+            found = False
+            for db_room in schedule_rooms:
+                if (room_id == db_room['_id']):
+                    found = True
+                    break
+                
+            if (found == False):
+                bookings_to_remove.append(db_schedule_booking)
+
+        for db_room in schedule_rooms:
             # Check if booking already exists
             found = False
             for db_booking in db_bookings:
@@ -1314,6 +1333,7 @@ def create_courses_bookings(db, schedules):
                     db_booking.get('room_id') == db_room['_id']
                 ):
                     found = True
+
                     break
             
             if (found == True):
@@ -1325,7 +1345,9 @@ def create_courses_bookings(db, schedules):
                 'available': True
             }
 
-            new_bookings.append(booking)    
+            new_bookings.append(booking)
+
+    print(f' - {len(bookings_to_remove)} bookings changed (not the schedule) (to remove)')
 
     # remove bookings with a schedule_id not in db_schedules
     print('Removing bookings without schedule...')
@@ -1337,19 +1359,19 @@ def create_courses_bookings(db, schedules):
             if (booking.get('schedule_id') not in schedules_ids):
                 bookings_without_schedule.append(booking)
 
-        if (len(bookings_without_schedule) == 0):
+        if (len(bookings_without_schedule) == 0 and len(bookings_to_remove) == 0):
             print('- No bookings to remove')
         else:
             db.course_bookings.update_many({
                 '_id': {
-                    '$in': [booking.get('_id') for booking in bookings_without_schedule]
+                    '$in': [booking.get('_id') for booking in bookings_without_schedule + bookings_to_remove]
                 }
             }, {
                 '$set': {
                     'available': False
                 }
             })
-            print(f'- {len(bookings_without_schedule)} bookings removed')
+            print(f'- {len(bookings_without_schedule + bookings_to_remove)} bookings removed')
         
     except Exception as e:
         print(e)
