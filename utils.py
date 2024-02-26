@@ -1280,10 +1280,14 @@ def create_courses_bookings(db, schedules):
     db_bookings = list(db.course_bookings.find({
         'available': True
     }))
+
+    db_unavailable_bookings = list(db.course_bookings.find({
+        'available': False
+    }))
     print(f'- {len(db_bookings)} bookings found in DB')
 
     print('Filtering bookings....')
-    new_bookings = []
+    new_bookings_candidates = []
     bookings_to_remove = []
     for schedule in tqdm(schedules, total=len(schedules)):
         db_schedule = None
@@ -1345,7 +1349,7 @@ def create_courses_bookings(db, schedules):
                 'available': True
             }
 
-            new_bookings.append(booking)
+            new_bookings_candidates.append(booking)
 
     print(f' - {len(bookings_to_remove)} bookings changed (not the schedule) (to remove)')
 
@@ -1376,16 +1380,47 @@ def create_courses_bookings(db, schedules):
     except Exception as e:
         print(e)
 
+    # check if new booking is in db_unavailable_bookings and set it to available
+    print('Checking if new bookings are in unavailable bookings...')
+    to_make_available = []
+    to_create = []
+    for new_booking in tqdm(new_bookings_candidates, total=len(new_bookings_candidates)):
+        found = False
+        for unavailable_booking in db_unavailable_bookings:
+            if (
+                new_booking.get('schedule_id') == unavailable_booking.get('schedule_id') and
+                new_booking.get('room_id') == unavailable_booking.get('room_id')
+            ):
+                found = True
+                to_make_available.append(unavailable_booking)
+                break
+
+        if (found == False):
+            to_create.append(new_booking)
+
+    if (len(to_make_available) == 0):
+        print('- No bookings to (re)make available')
+    else:
+        db.course_bookings.update_many({
+            '_id': {
+                '$in': [booking.get('_id') for booking in to_make_available]
+            }
+        }, {
+            '$set': {
+                'available': True
+            }
+        })
+        print(f'- {len(to_make_available)} bookings (re)made available')
     
-    if (len(new_bookings) == 0):
+    if (len(to_create) == 0):
         print('No bookings to create')
         return
 
     # insert new bookings
     try:
-        print(f'Creating {len(new_bookings)} new bookings...')
-        db.course_bookings.insert_many(new_bookings)
-        print(f'- {len(new_bookings)} bookings created')
+        print(f'Creating {len(to_create)} new bookings...')
+        db.course_bookings.insert_many(to_create)
+        print(f'- {len(to_create)} bookings created')
     except Exception as e:
         print(e)
 
