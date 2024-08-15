@@ -157,6 +157,7 @@ MAP_SECTIONS = {
     'Mineur en Neuro-X': 'NX',
     'Robotique contrôle et systèmes intelligents': 'MT',
     'UNIL - Collège des sciences': 'UNIL',
+    'Mineur en Science et ingénierie computationnelles': 'MA',
     'Mineur en Systèmes de communication': 'SC',
     'Mineur en Développement territorial et urbanisme': 'AR',
     'Mineur en Territoires en transformation et climat': 'SIE',

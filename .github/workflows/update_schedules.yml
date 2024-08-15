@@ -1,8 +1,8 @@
-name: cron_update_schedules
+name: cron_update_schedules_spring
 
 on:
-  schedule: # every day at 21:00 between 14 Feb and 14 Mar
-    - cron: '0 21 * 2-3 *'
+  schedule: # every day at 21:00 from 1 Feb to 31 Mar and from 1 Aug to 31 Oct
+    - cron: '0 21 * 2-3,8-10 *'
   workflow_dispatch: # manually trigger the workflow
 
 jobs:
