@@ -399,9 +399,13 @@ def create_studyplans(db, courses):
         'available': True
     }))
     print(f'- {len(db_studyplans)} studyplans found')
-    db_semesters = list(db.semesters.find({
-        'available': True
-    }))
+    
+    # Find current or next semester for each semester type (fall, spring, year)
+    db_semester_fall = get_current_or_next_semester(db, 'fall')
+    db_semester_spring = get_current_or_next_semester(db, 'spring')
+    db_semester_year = get_current_or_next_semester(db, 'year')
+    
+    db_semesters = [db_semester_fall, db_semester_spring, db_semester_year]
 
     db_units = list(db.units.find({ 'available': True }))
 
@@ -491,9 +495,11 @@ def create_planned_in(db, courses):
         'available': True
     }))
 
-    db_semesters = list(db.semesters.find({
-        'available': True
-    }))
+    db_semester_fall = get_current_or_next_semester(db, 'fall')
+    db_semester_spring = get_current_or_next_semester(db, 'spring')
+    db_semester_year = get_current_or_next_semester(db, 'year')
+    
+    db_semesters = [db_semester_fall, db_semester_spring, db_semester_year]
 
     print('Getting studyplans from DB...')
     db_studyplans = list(db.studyplans.find({
