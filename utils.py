@@ -368,6 +368,9 @@ def create_units(db, courses):
             promo = MAP_PROMOS_LONG[semester_long] if semester_long in MAP_PROMOS_LONG else None
             if (promo != None):
                 new_unit['promo'] = promo
+            if (unit[0] not in MAP_SECTIONS):
+                print('Section not found in MAP_SECTIONS', unit[0])
+                continue
             code = MAP_SECTIONS[unit[0]] + '-' + promo if promo != None else MAP_SECTIONS[unit[0]]
             new_unit['code'] = code
             new_unit['section'] = MAP_SECTIONS[unit[0]]
