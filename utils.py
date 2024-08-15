@@ -1159,6 +1159,9 @@ def create_rooms(db, schedules=[], rooms_names=[], update=False):
             room_capacity = plan_room[0].get("capacity", None)
             room_level = plan_room[0].get("level", None)
         
+        if (room_level == None):
+            continue
+        
         new_rooms.append({
             "name": room_name,
             "type": room_type,
