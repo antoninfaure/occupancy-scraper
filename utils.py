@@ -1144,8 +1144,8 @@ def create_rooms(db, schedules=[], rooms_names=[], update=False):
         room_link = None
         room_coordinates = None
         room_type = "unknown"
-        room_capacity = None
-        room_level = None
+        room_capacity = 0
+        room_level = 0
 
         # building is the characters before the first number
         room_building = re.split(r'\d', room_name)[0]
@@ -1158,9 +1158,6 @@ def create_rooms(db, schedules=[], rooms_names=[], update=False):
             room_coordinates = plan_room[0].get("coordinates", None)
             room_capacity = plan_room[0].get("capacity", None)
             room_level = plan_room[0].get("level", None)
-        
-        if (room_level == None):
-            continue
         
         new_rooms.append({
             "name": room_name,
