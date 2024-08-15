@@ -14,7 +14,7 @@ import os
 def get_all_courses_url():
     URL_ROOT = 'https://edu.epfl.ch/'
     shs = ['https://edu.epfl.ch/studyplan/fr/bachelor/programme-sciences-humaines-et-sociales/', 'https://edu.epfl.ch/studyplan/fr/master/programme-sciences-humaines-et-sociales/']
-    page = requests.get(URL_ROOT)
+    page = requests.get(URL_ROOT, timeout=500)
     soup = BeautifulSoup(page.content, "html.parser")
     cards = soup.findAll("div", class_="card-title")
     promos = [card.find('a').get('href') for card in cards]
@@ -52,9 +52,29 @@ def get_all_courses_url():
 
     return courses_url
 
+def parse_credits(soup):
+    credits = soup.find('div', class_="course-summary")
+    if (credits == None):
+        return None
+    
+    credits = credits.findAll('p')
+    if (len(credits) == 0):
+        return None
+    
+    credits = credits[0].text.split('/')
+    if (len(credits) == 0):
+        return None
+    
+    credits = re.findall(r'\d+', credits[1])
+    if (len(credits) == 0):
+        return None
+    
+    return int(credits[0])
+        
+
 ### PARSE COURSE ###
 def parse_course(url):
-    page = requests.get(url)
+    page = requests.get(url, timeout=(500, 500))
     if (page.status_code == 404):
         print(f'404: {url}')
         return None
@@ -65,7 +85,7 @@ def parse_course(url):
     if (soup.find('div', class_="course-summary") == None):
         print(url)
     code = soup.find('div', class_="course-summary").findAll('p')[0].text.split('/')[0].strip()
-    credits = int(re.findall(r'\d+', soup.find('div', class_="course-summary").findAll('p')[0].text.split('/')[1])[0])
+    credits = parse_credits(soup)
     teachers = [(x.text, x.get('href')) for x in soup.find('div', class_="course-summary").findAll('p')[1].findAll('a')]
     language = soup.find('div', class_="course-summary").findAll('p')
     if len(language) > 2:

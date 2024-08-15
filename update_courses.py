@@ -29,39 +29,38 @@ utils.add_teachers_to_courses(db, unique_courses)
 
 
 # Create semesters
+
+# Fall 2024-2025
+skip_dates = [
+    datetime(2024, 9, 16),
+    datetime(2024, 10, 21),
+    datetime(2024, 10, 22),
+    datetime(2024, 10, 23),
+    datetime(2024, 10, 24),
+    datetime(2024, 10, 25),
+    datetime(2025, 4, 18),
+    datetime(2025, 4, 21),
+    datetime(2025, 4, 22),
+    datetime(2025, 4, 23),
+    datetime(2025, 4, 24),
+    datetime(2025, 4, 25),
+    datetime(2025, 5, 29),
+]
+
 utils.create_new_semester(db,
-    name="Semestre de printemps 2023-2024",
-    start_date=datetime(2024, 2, 19),
-    end_date=datetime(2024, 5, 31),
-    skip_dates=[
-        datetime(2024, 3, 29),
-        datetime(2024, 4, 1),
-        datetime(2024, 4, 2),
-        datetime(2024, 4, 3),
-        datetime(2024, 4, 4),
-        datetime(2024, 4, 5),
-        datetime(2024, 5, 9),
-        datetime(2024, 5, 20),
-    ],
-    type="spring",
+    name="Semestre d'automne 2024-2025",
+    start_date=datetime(2024, 9, 16),
+    end_date=datetime(2024, 12, 22),
+    skip_dates=skip_dates,
+    type="fall",
     available=True
 )
 
 utils.create_new_semester(db,
-    name="2023-2024",
-    start_date=datetime(2024, 9, 1),
-    end_date=datetime(2024, 8, 30),
-    skip_dates=[
-        datetime(2023, 9, 18),
-        datetime(2024, 3, 29),
-        datetime(2024, 4, 1),
-        datetime(2024, 4, 2),
-        datetime(2024, 4, 3),
-        datetime(2024, 4, 4),
-        datetime(2024, 4, 5),
-        datetime(2024, 5, 9),
-        datetime(2024, 5, 20),
-    ],
+    name="2024-2025",
+    start_date=datetime(2024, 9, 9),
+    end_date=datetime(2025, 6, 1),
+    skip_dates=skip_dates,
     type="year",
     available=True
 )

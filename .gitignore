@@ -3,3 +3,8 @@ data
 .DS_Store
 
 __pycache__
+
+*.csv
+*.html
+
+scrap_moodle.py
