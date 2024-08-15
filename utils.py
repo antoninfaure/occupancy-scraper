@@ -568,6 +568,7 @@ def create_planned_in(db, courses):
             course_studyplans_ids.add(studyplan_db['_id'])
 
             if (planned_in_db == None or len(planned_in_db) == 0):
+                print(studyplan_db)
                 new_planned_ins.append({
                     'course_id': db_course['_id'],
                     'studyplan_id': studyplan_db['_id'],
@@ -1143,6 +1144,8 @@ def create_rooms(db, schedules=[], rooms_names=[], update=False):
         room_link = None
         room_coordinates = None
         room_type = "unknown"
+        room_capacity = None
+        room_level = None
 
         # building is the characters before the first number
         room_building = re.split(r'\d', room_name)[0]
