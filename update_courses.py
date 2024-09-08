@@ -49,7 +49,7 @@ skip_dates = [
 
 utils.create_new_semester(db,
     name="Semestre d'automne 2024-2025",
-    start_date=datetime(2024, 9, 16),
+    start_date=datetime(2024, 9, 9),
     end_date=datetime(2024, 12, 22),
     skip_dates=skip_dates,
     type="fall",

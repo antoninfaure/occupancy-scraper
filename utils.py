@@ -1220,7 +1220,6 @@ def update_schedules(db, schedules):
     # Find schedules with course in the studyplans
     print('Getting schedules from DB...')
     db_schedules = list(db.course_schedules.find({
-        'available': True,
         'course_id': {
                 '$in': db_planned_in_ids,      
         }
@@ -1229,10 +1228,13 @@ def update_schedules(db, schedules):
 
     incoming_schedules = schedules.copy()
     
+    db_schedules_to_remake_available = []
+    
     print(f'Filtering {len(incoming_schedules)} schedules...')
     new_schedules = []
     for incoming_schedule in tqdm(incoming_schedules, total=len(incoming_schedules)):
         found = False
+        db_schedule_found = None
         for db_schedule in db_schedules:
             if (
                 db_schedule.get('course_id') == incoming_schedule.get('course_id') and
@@ -1240,13 +1242,16 @@ def update_schedules(db, schedules):
                 db_schedule.get('end_datetime') == incoming_schedule.get('end_datetime') and
                 db_schedule.get('label') == incoming_schedule.get('label')
             ):
+                db_schedule_found = db_schedule
                 found = True
                 db_schedules.remove(db_schedule)
                 break
 
         if (found == True):
+            if (db_schedule_found.get('available') == False):
+                db_schedules_to_remake_available.append(db_schedule_found)
             continue
-
+        
         new_schedules.append({
             'course_id': incoming_schedule.get('course_id'),
             'start_datetime': incoming_schedule.get('start_datetime'),
@@ -1268,6 +1273,22 @@ def update_schedules(db, schedules):
             }
         })
         print(f'- {len(db_schedules)} schedules deleted')
+    except Exception as e:
+        print(e)
+        
+    # remake available schedules
+    print('Remaking available schedules...')
+    try:
+        db.course_schedules.update_many({
+            '_id': {
+                '$in': [db_schedule.get('_id') for db_schedule in db_schedules_to_remake_available]
+            }
+        }, {
+            '$set': {
+                'available': True
+            }
+        })
+        print(f'- {len(db_schedules_to_remake_available)} schedules remade available')
     except Exception as e:
         print(e)
 
