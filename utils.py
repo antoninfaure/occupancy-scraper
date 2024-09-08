@@ -1159,16 +1159,22 @@ def create_rooms(db, schedules=[], rooms_names=[], update=False):
             room_capacity = plan_room[0].get("capacity", None)
             room_level = plan_room[0].get("level", None)
         
-        new_rooms.append({
+        new_room = {
             "name": room_name,
             "type": room_type,
             "available": True,
             "link": room_link,
             "coordinates": room_coordinates,
-            "building": room_building,
-            "level": room_level,
-            "capacity": room_capacity
-        })
+            "building": room_building
+        }
+        
+        if (room_capacity != None and isinstance(room_capacity, int)):
+            new_room["capacity"] = room_capacity
+            
+        if (room_level != None and isinstance(room_level, int)):
+            new_room["level"] = room_level
+            
+        new_rooms.append(new_room)
 
     if (len(new_rooms) == 0):
         print("No new rooms to create")
