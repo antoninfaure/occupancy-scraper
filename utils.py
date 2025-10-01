@@ -265,25 +265,22 @@ def create_teachers(db, courses):
     new_teachers = []
     for course in tqdm(courses, total=len(courses)):
         for teacher in course.get("teachers"):
-            found = False
-            for db_teacher in db_teachers:
-                if db_teacher.get("name") == teacher[0]:
-                    found = True
-                    break
+            teacher_name, teacher_url = teacher
 
-            if found is None:
+            # Skip teachers that already exist in the database
+            if any(
+                db_teacher.get("name") == teacher_name for db_teacher in db_teachers
+            ):
                 continue
 
-            for new_teacher in new_teachers:
-                if new_teacher.get("name") == teacher[0]:  # name is PK
-                    found = True
-                    break
-
-            if not found:
+            # Skip teachers already queued for insertion
+            if any(
+                new_teacher.get("name") == teacher_name for new_teacher in new_teachers
+            ):
                 continue
 
             new_teachers.append(
-                {"name": teacher[0], "people_url": teacher[1], "available": True}
+                {"name": teacher_name, "people_url": teacher_url, "available": True}
             )
 
     print("Creating new teachers...")
@@ -455,12 +452,17 @@ def create_studyplans(db, courses):
     db_semester_spring = get_current_or_next_semester(db, "spring")
     db_semester_year = get_current_or_next_semester(db, "year")
 
-    db_semesters = filter(
-        lambda x: x is not None,
-        [db_semester_fall, db_semester_spring, db_semester_year],
+    db_semesters = list(
+        filter(
+            lambda x: x is not None,
+            [db_semester_fall, db_semester_spring, db_semester_year],
+        )
     )
+    print(len(list(db_semesters)), "db semesters found")
 
     db_units = list(db.units.find({"available": True}))
+
+    print(db_semesters)
 
     new_studyplans = []
     semester_re_pattern = r"(\d{4}-\d{4})"
@@ -493,13 +495,18 @@ def create_studyplans(db, courses):
                 semester_type = MAP_SEMESTERS_LONG[semester_long]
 
             # Find semester in db
+            print("semester_type", semester_type)
+
             studyplan_semester = list(
                 filter(
-                    lambda semester: semester_type == semester.get("type"), db_semesters
+                    lambda semester: semester_type == semester.get("type"),
+                    db_semesters,
                 )
             )
             if studyplan_semester is None or len(studyplan_semester) == 0:
+                print("studyplan_semester not found")
                 continue
+
             studyplan_semester = studyplan_semester[0]
 
             # Check if studyplan already exists in db
@@ -514,6 +521,7 @@ def create_studyplans(db, courses):
 
             # If studyplan already exists, continue
             if found:
+                print("Studyplan already exists 1")
                 continue
 
             # Check if studyplan already exists in new_studyplans
@@ -528,6 +536,7 @@ def create_studyplans(db, courses):
 
             # If studyplan already exists, continue
             if found:
+                print("Studyplan already exists 2")
                 continue
 
             new_studyplans.append(
@@ -563,9 +572,11 @@ def create_planned_in(db, courses):
     db_semester_spring = get_current_or_next_semester(db, "spring")
     db_semester_year = get_current_or_next_semester(db, "year")
 
-    db_semesters = filter(
-        lambda x: x is not None,
-        [db_semester_fall, db_semester_spring, db_semester_year],
+    db_semesters = list(
+        filter(
+            lambda x: x is not None,
+            [db_semester_fall, db_semester_spring, db_semester_year],
+        )
     )
 
     print("Getting studyplans from DB...")
@@ -665,7 +676,6 @@ def create_planned_in(db, courses):
             course_studyplans_ids.add(studyplan_db["_id"])
 
             if planned_in_db is None or len(planned_in_db) == 0:
-                print(studyplan_db)
                 new_planned_ins.append(
                     {
                         "course_id": db_course["_id"],
@@ -1001,6 +1011,7 @@ def find_courses_schedules(db):
     semester_courses_ids = find_semester_courses_ids(db, semester)
 
     current_year = get_current_or_next_semester(db, "year")
+
     current_year_courses_ids = find_semester_courses_ids(db, current_year)
 
     print("Getting courses from DB...")

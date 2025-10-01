@@ -94,6 +94,13 @@ def main() -> None:
         datetime(2025, 10, 22),
         datetime(2025, 10, 23),
         datetime(2025, 10, 24),
+        datetime(2026, 4, 6),
+        datetime(2026, 4, 7),
+        datetime(2026, 4, 8),
+        datetime(2026, 4, 9),
+        datetime(2026, 4, 10),
+        datetime(2026, 5, 14),
+        datetime(2026, 5, 25),
     ]
 
     # Fall 2025-2026
@@ -101,10 +108,30 @@ def main() -> None:
     create_new_semester(
         db,
         name="Semestre d'automne 2025-2026",
-        start_date=datetime(2025, 9, 15),
+        start_date=datetime(2025, 9, 8),
         end_date=datetime(2025, 12, 21),
         skip_dates=skip_dates,
         type="fall",
+        available=True,
+    )
+    # Spring 2025-2026
+    create_new_semester(
+        db,
+        name="Semestre de printemps 2025-2026",
+        start_date=datetime(2026, 2, 16),
+        end_date=datetime(2026, 5, 31),
+        skip_dates=skip_dates,
+        type="spring",
+        available=True,
+    )
+    # Year 2025-2026
+    create_new_semester(
+        db,
+        name="2025-2026",
+        start_date=datetime(2025, 9, 8),
+        end_date=datetime(2026, 5, 31),
+        skip_dates=skip_dates,
+        type="year",
         available=True,
     )
     # Create units
