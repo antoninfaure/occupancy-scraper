@@ -32,7 +32,7 @@ The current repository is for the scraper, which is a set of Python scripts that
 
 To install the dependencies run:
 ```
-pip install -r requirements.txt
+uv sync
 ```
 
 And then set the environnement variables for the DB in `.env`.
@@ -45,7 +45,7 @@ Before each start of a semester, the DB needs to update the studyplans and cours
 
 To do so you, or a cron job, can run the script: 
 ```
-python update_courses.py
+uv run update_courses.py
 ```
 
 #### On a weekly basis (or more)
@@ -54,7 +54,7 @@ Since edu.epfl.ch can change a lot during the first weeks for lots of reasons, t
 
 To do so you, or a cron job, can run the script: 
 ```
-python update_schedules.py
+uv run update_schedules.py
 ```
 
 It will find the current or next semester and then proceed to scrape its courses schedules and update them accordingly.
