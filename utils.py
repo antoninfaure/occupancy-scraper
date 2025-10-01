@@ -267,7 +267,7 @@ def create_teachers(db, courses):
         for teacher in course.get("teachers"):
             found = False
             for db_teacher in db_teachers:
-                if db_teacher.get("people_url") == teacher[1]:
+                if db_teacher.get("name") == teacher[0]:
                     found = True
                     break
 
@@ -275,7 +275,7 @@ def create_teachers(db, courses):
                 continue
 
             for new_teacher in new_teachers:
-                if new_teacher.get("people_url") == teacher[1]:
+                if new_teacher.get("name") == teacher[0]:  # name is PK
                     found = True
                     break
 
@@ -347,26 +347,27 @@ def add_teachers_to_courses(db, courses):
 
 ### CREATE NEW SEMESTER ###
 def create_new_semester(db, **kwargs):
-    name = kwargs.get("name") or None
-    start_date = kwargs.get("start_date") or None
-    end_date = kwargs.get("end_date") or None
-    type = kwargs.get("type") or None
-    available = kwargs.get("available") or False
-    skip_dates = kwargs.get("skip_dates") or []
+    name = kwargs.get("name")
+    if not name:
+        raise ValueError("create_new_semester requires a non-empty 'name'")
 
-    try:
-        db.semesters.insert_one(
-            {
-                "name": name,
-                "start_date": start_date,
-                "end_date": end_date,
-                "type": type,
-                "available": available,
-                "skip_dates": skip_dates,
-            }
-        )
-    except Exception as e:
-        print(e)
+    semester_payload = {
+        "start_date": kwargs.get("start_date"),
+        "end_date": kwargs.get("end_date"),
+        "type": kwargs.get("type"),
+        "available": kwargs.get("available", False),
+        "skip_dates": kwargs.get("skip_dates", []),
+    }
+
+    # Use upsert to avoid duplicate key errors when the semester already exists.
+    result = db.semesters.update_one(
+        {"name": name},
+        {"$set": semester_payload, "$setOnInsert": {"name": name}},
+        upsert=True,
+    )
+
+    if result.matched_count and not result.modified_count:
+        print(f"Semester '{name}' already up-to-date")
 
 
 def list_units(courses):
