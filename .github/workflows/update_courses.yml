@@ -11,18 +11,19 @@ jobs:
       - name: checkout repo content
         uses: actions/checkout@v3 # checkout the repository content to github runner.
         
-      - name: setup python
-        uses: actions/setup-python@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
-          
-      - name: install python packages
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          python-version: '3.12'
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: uv sync
+        run: uv sync
           
       - name: execute py script # run update_courses.py
-        run: python update_courses.py
+        run: uv run update_courses.py
         env:
           DB_NAME: ${{ secrets.DB_NAME }}
           DB_USER: ${{ secrets.DB_USER }}

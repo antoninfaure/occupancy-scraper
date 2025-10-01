@@ -22,7 +22,6 @@ jobs:
 
       - name: Install uv
         run: pip install uv
-
       
       - name: uv sync
         run: uv sync
