@@ -1,0 +1,19 @@
+[project]
+name = "occupancy-scraper"
+version = "0.1.0"
+description = "Scraper of occupancy.flep.ch"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "beautifulsoup4>=4.14.2",
+    "lxml>=6.0.2",
+    "numpy>=2.3.3",
+    "pandas>=2.3.3",
+    "pydantic-settings>=2.11.0",
+    "pymongo>=4.15.1",
+    "pyproj>=3.7.2",
+    "python-dotenv>=1.1.1",
+    "requests>=2.32.5",
+    "seaborn>=0.13.2",
+    "tqdm>=4.67.1",
+]

@@ -1,9 +1,26 @@
 import pymongo
-from models import *
+from pymongo import MongoClient
+from pymongo.database import Database
+from pymongo.errors import ConnectionFailure
 from tqdm import tqdm
 
+from models import (
+    course_booking_validator,
+    course_schedule_validator,
+    course_validator,
+    event_booking_validator,
+    planned_in_validator,
+    room_validator,
+    semester_validator,
+    studyplan_validator,
+    teacher_validator,
+    unit_validator,
+)
+from settings import Settings
+
+
 ### DB INIT ###
-def init(db):
+def init(db: Database) -> None:
     def init_rooms_collection():
         try:
             db.create_collection("rooms")
@@ -14,10 +31,12 @@ def init(db):
 
         try:
             db.command("collMod", "rooms", validator=room_validator)
-            db.rooms.create_index([("name", pymongo.ASCENDING)], name="room_name", unique=True)
+            db.rooms.create_index(
+                [("name", pymongo.ASCENDING)], name="room_name", unique=True
+            )
         except Exception as e:
             print(e)
-    
+
     def init_teachers_collection():
         try:
             db.create_collection("teachers")
@@ -28,7 +47,9 @@ def init(db):
 
         try:
             db.command("collMod", "teachers", validator=teacher_validator)
-            db.teachers.create_index([("name", pymongo.ASCENDING)], name="teacher_unique", unique=True)
+            db.teachers.create_index(
+                [("name", pymongo.ASCENDING)], name="teacher_unique", unique=True
+            )
         except Exception as e:
             print(e)
 
@@ -43,7 +64,9 @@ def init(db):
 
         try:
             db.command("collMod", "courses", validator=course_validator)
-            db.courses.create_index([("code", pymongo.ASCENDING)], name="course_unique", unique=True)
+            db.courses.create_index(
+                [("code", pymongo.ASCENDING)], name="course_unique", unique=True
+            )
         except Exception as e:
             print(e)
 
@@ -58,7 +81,11 @@ def init(db):
 
         try:
             db.command("collMod", "course_bookings", validator=course_booking_validator)
-            db.course_bookings.create_index([("schedule_id", pymongo.ASCENDING), ("room_id", pymongo.ASCENDING)], name="booking_unique", unique=True)
+            db.course_bookings.create_index(
+                [("schedule_id", pymongo.ASCENDING), ("room_id", pymongo.ASCENDING)],
+                name="booking_unique",
+                unique=True,
+            )
         except Exception as e:
             print(e)
 
@@ -70,10 +97,21 @@ def init(db):
             if str(e) != "collection course_schedules already exists":
                 print(e)
             return
-        
+
         try:
-            db.command("collMod", "course_schedules", validator=course_schedule_validator)
-            db.course_schedules.create_index([("course_id", pymongo.ASCENDING), ("start_datetime", pymongo.ASCENDING), ("end_datetime", pymongo.ASCENDING), ("label", pymongo.ASCENDING)], name="schedule_unique", unique=True)
+            db.command(
+                "collMod", "course_schedules", validator=course_schedule_validator
+            )
+            db.course_schedules.create_index(
+                [
+                    ("course_id", pymongo.ASCENDING),
+                    ("start_datetime", pymongo.ASCENDING),
+                    ("end_datetime", pymongo.ASCENDING),
+                    ("label", pymongo.ASCENDING),
+                ],
+                name="schedule_unique",
+                unique=True,
+            )
         except Exception as e:
             print(e)
 
@@ -88,7 +126,11 @@ def init(db):
 
         try:
             db.command("collMod", "studyplans", validator=studyplan_validator)
-            db.studyplans.create_index([("unit_id", pymongo.ASCENDING), ("semester_id", pymongo.ASCENDING)], name="studyplan_unique", unique=True)
+            db.studyplans.create_index(
+                [("unit_id", pymongo.ASCENDING), ("semester_id", pymongo.ASCENDING)],
+                name="studyplan_unique",
+                unique=True,
+            )
         except Exception as e:
             print(e)
 
@@ -103,7 +145,9 @@ def init(db):
 
         try:
             db.command("collMod", "units", validator=unit_validator)
-            db.units.create_index([("name", pymongo.ASCENDING)], name="unit_unique", unique=True)
+            db.units.create_index(
+                [("name", pymongo.ASCENDING)], name="unit_unique", unique=True
+            )
         except Exception as e:
             print(e)
 
@@ -118,7 +162,9 @@ def init(db):
 
         try:
             db.command("collMod", "semesters", validator=semester_validator)
-            db.semesters.create_index([("name", pymongo.ASCENDING)], name="semester_unique", unique=True)
+            db.semesters.create_index(
+                [("name", pymongo.ASCENDING)], name="semester_unique", unique=True
+            )
         except Exception as e:
             print(e)
 
@@ -133,7 +179,11 @@ def init(db):
 
         try:
             db.command("collMod", "planned_in", validator=planned_in_validator)
-            db.planned_in.create_index([("studyplan_id", pymongo.ASCENDING), ("course_id", pymongo.ASCENDING)], name="planned_in_unique", unique=True)
+            db.planned_in.create_index(
+                [("studyplan_id", pymongo.ASCENDING), ("course_id", pymongo.ASCENDING)],
+                name="planned_in_unique",
+                unique=True,
+            )
         except Exception as e:
             print(e)
 
@@ -145,18 +195,16 @@ def init(db):
             if str(e) != "collection event_bookings already exists":
                 print(e)
             return
-        
+
         try:
             db.command("collMod", "event_bookings", validator=event_booking_validator)
         except Exception as e:
             print(e)
-    
+
     pbar = tqdm(total=10, desc="Initializing DB", leave=False)
-    
 
     inits = [
         init_rooms_collection(),
-
         # Course collections
         init_teachers_collection(),
         init_courses_collection(),
@@ -166,7 +214,6 @@ def init(db):
         init_units_collection(),
         init_semesters_collection(),
         init_planned_in_collection(),
-
         # Event collections
         init_event_bookings_collection(),
     ]
@@ -178,4 +225,17 @@ def init(db):
     print("-- DB initialized -- ")
 
 
+def init_and_connect(settings: Settings) -> Database:
+    client: MongoClient = MongoClient(settings.connection_string)
+    db = client.get_database(settings.DB_NAME)
 
+    # if connected, print success message
+    try:
+        # ismaster command is cheap and does not require auth.
+        client.admin.command("ismaster")
+        print("Connected to MongoDB")
+    except ConnectionFailure:
+        print("Server not available")
+    init(db)
+
+    return db

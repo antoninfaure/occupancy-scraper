@@ -1,15 +1,24 @@
-import requests
-from bs4 import BeautifulSoup
-import re
-from config import *
-from datetime import datetime, timedelta
-from tqdm import tqdm
-from pyproj import Transformer as pyproj_Transformer
-import numpy as np
+import concurrent.futures
 import json
 import multiprocessing
 import os
-import concurrent.futures
+import re
+from datetime import datetime, timedelta
+
+import numpy as np
+import requests
+from bs4 import BeautifulSoup
+from pyproj import Transformer as pyproj_Transformer
+from tqdm import tqdm
+
+from config import (
+    MAP_PROMOS_LONG,
+    MAP_ROOMS,
+    MAP_SECTIONS,
+    MAP_SEMESTERS_LONG,
+    ROOMS_FILTER,
+)
+
 
 ### GET ALL COURSES URLS ###
 def get_all_courses_url():
@@ -20,7 +29,7 @@ def get_all_courses_url():
     ]
     page = requests.get(URL_ROOT, timeout=500)
     soup = BeautifulSoup(page.content, "html.parser")
-    cards = soup.findAll("div", class_="card-title")
+    cards = soup.find_all("div", class_="card-title")
     promos = [card.find("a").get("href") for card in cards]
     courses_url = []
     courses_names = []
@@ -32,7 +41,7 @@ def get_all_courses_url():
             page = requests.get(URL_ROOT + section)
             soup = BeautifulSoup(page.content, "html.parser")
             for course in soup.find("main").findAll("div", class_="cours-name"):
-                if course.find("a") != None:
+                if course.find("a") is not None:
                     course_url = course.find("a").get("href")
                     course_name = course_url.split("/").pop()
                     if (
@@ -46,8 +55,8 @@ def get_all_courses_url():
     for url in shs:
         page = requests.get(url)
         soup = BeautifulSoup(page.content, "html.parser")
-        for course in soup.findAll("div", class_="cours-name"):
-            if course.find("a") != None:
+        for course in soup.find_all("div", class_="cours-name"):
+            if course.find("a") is not None:
                 course_url = course.find("a").get("href")
                 course_name = course_url.split("/").pop()
                 if course_name not in courses_names:
@@ -62,7 +71,7 @@ def get_all_courses_url():
 
 def parse_credits(soup):
     credits = soup.find("div", class_="course-summary")
-    if credits == None:
+    if credits is None:
         return None
 
     credits = credits.findAll("p")
@@ -90,7 +99,7 @@ def parse_course(url):
     soup = BeautifulSoup(page.content, "html.parser")
 
     title = soup.find("main").find("h1").text
-    if soup.find("div", class_="course-summary") == None:
+    if soup.find("div", class_="course-summary") is None:
         print(url)
     code = (
         soup.find("div", class_="course-summary")
@@ -154,10 +163,14 @@ def parse_all_courses():
     # Use ThreadPoolExecutor to parse courses concurrently
     with concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count()) as executor:
         # Submit all the tasks to the executor
-        future_to_url = {executor.submit(parse_course, URL_ROOT + url): url for url in courses_url}
+        future_to_url = {
+            executor.submit(parse_course, URL_ROOT + url): url for url in courses_url
+        }
 
         # Process the completed futures
-        for future in tqdm(concurrent.futures.as_completed(future_to_url), total=len(courses_url)):
+        for future in tqdm(
+            concurrent.futures.as_completed(future_to_url), total=len(courses_url)
+        ):
             url = future_to_url[future]
             try:
                 course = future.result()
@@ -215,7 +228,7 @@ def create_courses(db, courses):
             "edu_url": course.get("edu_url"),
             "available": True,
         }
-        if course.get("language") != None:
+        if course.get("language") is not None:
             new_course["language"] = course.get("language")
 
         new_courses.append(new_course)
@@ -258,7 +271,7 @@ def create_teachers(db, courses):
                     found = True
                     break
 
-            if found == True:
+            if found is None:
                 continue
 
             for new_teacher in new_teachers:
@@ -266,7 +279,7 @@ def create_teachers(db, courses):
                     found = True
                     break
 
-            if found == True:
+            if not found:
                 continue
 
             new_teachers.append(
@@ -309,7 +322,7 @@ def add_teachers_to_courses(db, courses):
                 db_course = db_course_
                 break
 
-        if db_course == None:
+        if db_course is None:
             continue
 
         course_teachers_ids = []
@@ -321,7 +334,7 @@ def add_teachers_to_courses(db, courses):
                     found = True
                     break
 
-            if found == True:
+            if found:
                 course_teachers_ids.append(db_teacher.get("_id"))
                 continue
 
@@ -373,7 +386,6 @@ def list_units(courses):
 
 
 def create_units(db, courses):
-
     units = list_units(courses)
 
     print("Getting units from DB...")
@@ -394,21 +406,20 @@ def create_units(db, courses):
             else unit[0]
         )
         if unit_name not in db_units_names and unit_name not in new_units_names:
-
             new_unit = dict()
             promo = (
                 MAP_PROMOS_LONG[semester_long]
                 if semester_long in MAP_PROMOS_LONG
                 else None
             )
-            if promo != None:
+            if promo is not None:
                 new_unit["promo"] = promo
             if unit[0] not in MAP_SECTIONS:
                 print("Section not found in MAP_SECTIONS", unit[0])
                 continue
             code = (
                 MAP_SECTIONS[unit[0]] + "-" + promo
-                if promo != None
+                if promo is not None
                 else MAP_SECTIONS[unit[0]]
             )
             new_unit["code"] = code
@@ -468,7 +479,7 @@ def create_studyplans(db, courses):
             studyplan_unit = list(
                 filter(lambda unit: unit["name"] == unit_name, db_units)
             )
-            if studyplan_unit == None or len(studyplan_unit) == 0:
+            if studyplan_unit is None or len(studyplan_unit) == 0:
                 print("Unit not found", unit_name)
                 continue
             studyplan_unit = studyplan_unit[0]
@@ -486,7 +497,7 @@ def create_studyplans(db, courses):
                     lambda semester: semester_type == semester.get("type"), db_semesters
                 )
             )
-            if studyplan_semester == None or len(studyplan_semester) == 0:
+            if studyplan_semester is None or len(studyplan_semester) == 0:
                 continue
             studyplan_semester = studyplan_semester[0]
 
@@ -501,7 +512,7 @@ def create_studyplans(db, courses):
                     break
 
             # If studyplan already exists, continue
-            if found == True:
+            if found:
                 continue
 
             # Check if studyplan already exists in new_studyplans
@@ -515,7 +526,7 @@ def create_studyplans(db, courses):
                     break
 
             # If studyplan already exists, continue
-            if found == True:
+            if found:
                 continue
 
             new_studyplans.append(
@@ -551,7 +562,10 @@ def create_planned_in(db, courses):
     db_semester_spring = get_current_or_next_semester(db, "spring")
     db_semester_year = get_current_or_next_semester(db, "year")
 
-    db_semesters = filter(lambda x: x is not None, [db_semester_fall, db_semester_spring, db_semester_year])
+    db_semesters = filter(
+        lambda x: x is not None,
+        [db_semester_fall, db_semester_spring, db_semester_year],
+    )
 
     print("Getting studyplans from DB...")
     db_studyplans = list(
@@ -584,7 +598,7 @@ def create_planned_in(db, courses):
         db_course = list(
             filter(lambda db_course: db_course["code"] == course["code"], db_courses)
         )[0]
-        if db_course == None:
+        if db_course is None:
             continue
 
         course_studyplans_ids = set()
@@ -603,7 +617,7 @@ def create_planned_in(db, courses):
             studyplan_unit = list(
                 filter(lambda unit: unit["name"] == unit_name, db_units)
             )[0]
-            if studyplan_unit == None:
+            if studyplan_unit is None:
                 print("Unit not found")
                 continue
 
@@ -619,7 +633,7 @@ def create_planned_in(db, courses):
                     lambda semester: semester_type == semester.get("type"), db_semesters
                 )
             )
-            if studyplan_semester_db == None or len(studyplan_semester_db) == 0:
+            if studyplan_semester_db is None or len(studyplan_semester_db) == 0:
                 continue
             studyplan_semester_db = studyplan_semester_db[0]
 
@@ -631,7 +645,7 @@ def create_planned_in(db, courses):
                     db_studyplans,
                 )
             )
-            if studyplan_db == None or len(studyplan_db) == 0:
+            if studyplan_db is None or len(studyplan_db) == 0:
                 print("Studyplan not found")
                 continue
             studyplan_db = studyplan_db[0]
@@ -649,7 +663,7 @@ def create_planned_in(db, courses):
                 continue
             course_studyplans_ids.add(studyplan_db["_id"])
 
-            if planned_in_db == None or len(planned_in_db) == 0:
+            if planned_in_db is None or len(planned_in_db) == 0:
                 print(studyplan_db)
                 new_planned_ins.append(
                     {
@@ -673,11 +687,10 @@ def create_planned_in(db, courses):
 
 
 def get_current_or_next_semester(db, semester_type=None):
-
     today = datetime.today()
 
     # If semester_type is specified, get the current or next semester of this type
-    if semester_type != None:
+    if semester_type is not None:
         semester = db.semesters.find_one(
             {"end_date": {"$gte": today}, "type": semester_type}, sort=[("end_date", 1)]
         )
@@ -704,8 +717,7 @@ def get_current_or_next_semester(db, semester_type=None):
 
 
 def find_semester_courses_ids(db, semester):
-
-    if semester == None:
+    if semester is None:
         return
 
     print("Getting studyplans from DB...")
@@ -737,13 +749,13 @@ def get_course_schedule(url):
     schedule = soup.find("div", class_="coursebook-week-caption sr-only")
 
     edoc = False
-    if schedule == None:
+    if schedule is None:
         schedule_parsed = parse_schedule_EDOC(soup)
         edoc = True
     else:
         schedule_parsed = parse_schedule(soup)
 
-    if schedule_parsed == None:
+    if schedule_parsed is None:
         return None, edoc
 
     return schedule_parsed, edoc
@@ -757,7 +769,7 @@ def parse_schedule_EDOC(soup):
     iframe_soup = BeautifulSoup(
         requests.get(soup.find("iframe").attrs["src"]).content, "html.parser"
     )
-    if iframe_soup.find("table") == None:
+    if iframe_soup.find("table") is None:
         # print(f'\033[91m SKIP (no schedule) \033[0m')
         return None
 
@@ -767,15 +779,16 @@ def parse_schedule_EDOC(soup):
     for i, row in enumerate(rows):
         if i == 0:
             continue
-        if row.find("th") != None:
+        date: datetime | None = None
+        if row.find("th") is not None:
             # find a dd.mm.yyyy date
-            date = re.findall(r"\d{2}.\d{2}.\d{4}", row.find("th").text)
-            if len(date) > 0:
-                date = datetime.strptime(date[0], "%d.%m.%Y")
+            date_str = re.findall(r"\d{2}.\d{2}.\d{4}", row.find("th").text)
+            if len(date_str) > 0:
+                date = datetime.strptime(date_str[0], "%d.%m.%Y")
         elif (
-            row.get("class") != None
+            row.get("class") is not None
             and "grisleger" in row.get("class")
-            and date != None
+            and date is not None
         ):
             time = [x.split(":")[0] for x in row.findAll("td")[0].text.split("-")]
 
@@ -914,7 +927,7 @@ def create_semester_schedule(schedule, db_semester):
     start_date = db_semester.get("start_date")
     end_date = db_semester.get("end_date")
     skip_dates = db_semester.get("skip_dates")
-    if skip_dates == None:
+    if skip_dates is None:
         skip_dates = []
 
     semester_schedule = []
@@ -954,19 +967,19 @@ def create_semester_schedule(schedule, db_semester):
 
 def process_course_schedules(course, db_courses_semester_codes, semester):
     course_edu_url = course.get("edu_url")
-    if course_edu_url == None:
+    if course_edu_url is None:
         return None
 
     result = get_course_schedule(course_edu_url)
-    if result == None:
+    if result is None:
         print(f"No schedule found for {course_edu_url}")
         return None
     schedule, edoc = result
 
-    if schedule == None:
+    if schedule is None:
         return None
 
-    if edoc == False:
+    if edoc is False:
         if course.get("code") not in db_courses_semester_codes:
             return None
         schedule = create_semester_schedule(schedule, semester)
@@ -983,7 +996,6 @@ def process_course_schedules_start(args):
 
 
 def find_courses_schedules(db):
-
     semester = get_current_or_next_semester(db)
     semester_courses_ids = find_semester_courses_ids(db, semester)
 
@@ -1005,13 +1017,9 @@ def find_courses_schedules(db):
             }
         )
     )
-    db_courses_year_codes = [course.get("code") for course in db_courses_year]
-
     db_courses = db_courses_semester + db_courses_year
 
     print(f"- {len(db_courses)} courses found")
-
-    db_schedules = list(db.course_schedules.find({"available": True}))
 
     schedules = []
     num_processes = multiprocessing.cpu_count()
@@ -1029,7 +1037,7 @@ def find_courses_schedules(db):
         )
 
         for schedule in processed_schedules:
-            if schedule != None:
+            if schedule is not None:
                 schedules += schedule
 
     return schedules
@@ -1037,10 +1045,9 @@ def find_courses_schedules(db):
 
 ### LIST ALL ROOMS ###
 def list_rooms(schedules):
-
     rooms = []
     for schedule in schedules:
-        if schedule.get("rooms") == None:
+        if schedule.get("rooms") is None:
             continue
 
         schedule_rooms = schedule.get("rooms")
@@ -1078,7 +1085,7 @@ def list_plan_rooms():
 
         r = requests.post(request_url, data=xml)
         level_xml = BeautifulSoup(r.text, "xml")
-        if level_xml.find("gml:Null") != None:
+        if level_xml.find("gml:Null") is not None:
             return None
         return level_xml.findAll("gml:featureMember")
 
@@ -1167,7 +1174,7 @@ def list_plan_rooms():
                 level_rooms_xml, total=len(level_rooms_xml), leave=False
             ):
                 room = parse_room(room_xml)
-                if room == None:
+                if room is None:
                     continue
                 if room not in rooms_parsed:
                     room["level"] = level
@@ -1191,11 +1198,11 @@ def create_rooms(db, schedules=[], rooms_names=[], update=False):
         - schedules: a list of schedules
     """
 
-    if update == True:
+    if update:
         rooms_names = []
 
-    elif len(rooms_names) == 0 or type(rooms_names) != list:
-        if len(schedules) == 0 or type(schedules) != list:
+    elif len(rooms_names) == 0 or not isinstance(rooms_names, list):
+        if len(schedules) == 0 or not isinstance(schedules, list):
             print("No schedules to create")
             return
 
@@ -1247,7 +1254,6 @@ def create_rooms(db, schedules=[], rooms_names=[], update=False):
             or db_room_capacity != plan_room_capacity
             or (db_room_level != plan_room_level and plan_room_level)
         ):
-
             updated_room = {
                 "name": db_room_name,
                 "type": plan_room_type,
@@ -1255,10 +1261,10 @@ def create_rooms(db, schedules=[], rooms_names=[], update=False):
                 "coordinates": plan_room_coordinates,
             }
 
-            if plan_room_capacity != None and isinstance(plan_room_capacity, int):
+            if plan_room_capacity is not None and isinstance(plan_room_capacity, int):
                 updated_room["capacity"] = plan_room_capacity
 
-            if plan_room_level != None and isinstance(plan_room_level, int):
+            if plan_room_level is not None and isinstance(plan_room_level, int):
                 updated_room["level"] = plan_room_level
 
             db.rooms.update_one({"name": db_room_name}, {"$set": updated_room})
@@ -1304,10 +1310,10 @@ def create_rooms(db, schedules=[], rooms_names=[], update=False):
             "building": room_building,
         }
 
-        if room_capacity != None and isinstance(room_capacity, int):
+        if room_capacity is not None and isinstance(room_capacity, int):
             new_room["capacity"] = room_capacity
 
-        if room_level != None and isinstance(room_level, int):
+        if room_level is not None and isinstance(room_level, int):
             new_room["level"] = room_level
 
         new_rooms.append(new_room)
@@ -1326,8 +1332,6 @@ def create_rooms(db, schedules=[], rooms_names=[], update=False):
 
 
 def update_schedules(db, schedules):
-    db_rooms = list(db.rooms.find({"available": True}))
-
     db_semester = get_current_or_next_semester(db)
     db_year_semester = get_current_or_next_semester(db, "year")
 
@@ -1396,8 +1400,8 @@ def update_schedules(db, schedules):
                 db_schedules.remove(db_schedule)
                 break
 
-        if found == True:
-            if db_schedule_found.get("available") == False:
+        if found and db_schedule_found is not None:
+            if not db_schedule_found.get("available"):
                 db_schedules_to_remake_available.append(db_schedule_found)
             continue
 
@@ -1508,14 +1512,14 @@ def create_courses_bookings(db, schedules):
                 db_schedule = db_item
                 break
 
-        if db_schedule == None:
+        if db_schedule is None:
             continue
 
         schedule_rooms = []
         for room in schedule["rooms"]:
             db_room = list(filter(lambda db_room: db_room["name"] == room, db_rooms))
 
-            if db_room == None or len(db_room) == 0:
+            if db_room is None or len(db_room) == 0:
                 continue
             db_room = db_room[0]
 
@@ -1536,7 +1540,7 @@ def create_courses_bookings(db, schedules):
                     found = True
                     break
 
-            if found == False:
+            if not found:
                 bookings_to_remove.append(db_schedule_booking)
 
         for db_room in schedule_rooms:
@@ -1551,7 +1555,7 @@ def create_courses_bookings(db, schedules):
 
                     break
 
-            if found == True:
+            if found:
                 continue
 
             booking = {
@@ -1614,7 +1618,7 @@ def create_courses_bookings(db, schedules):
                 to_make_available.append(unavailable_booking)
                 break
 
-        if found == False:
+        if not found:
             to_create.append(new_booking)
 
     if len(to_make_available) == 0:
@@ -1754,7 +1758,6 @@ def get_asp_net_cookie(room_name):
 
 
 def query_room(room_name, start_date, end_date, headers):
-
     # generate columns values for the request (for the 7 days starting from start_date)
     columns = []
     start_datetime = datetime.strptime(start_date, "%Y-%m-%dT%H:%M:%S")
@@ -1769,47 +1772,6 @@ def query_room(room_name, start_date, end_date, headers):
                 "Children": [],
             }
         )
-
-    callback_params = {
-        "action": "Command",
-        "parameters": {"command": "navigate"},
-        "data": {"start": start_date, "end": end_date, "days": 7},
-        "header": {
-            "control": "dpc",
-            "id": "ContentPlaceHolder1_DayPilotCalendar1",
-            "clientState": {},
-            "columns": columns,
-            "days": 7,
-            "startDate": start_date,
-            "cellDuration": 30,
-            "heightSpec": "BusinessHours",
-            "businessBeginsHour": 7,
-            "businessEndsHour": 20,
-            "viewType": "Days",
-            "dayBeginsHour": 0,
-            "dayEndsHour": 0,
-            "headerLevels": 1,
-            "backColor": "White",
-            "nonBusinessBackColor": "White",
-            "eventHeaderVisible": True,
-            "timeFormat": "Clock12Hours",
-            "showAllDayEvents": True,
-            "tagFields": ["name", "id"],
-            "hourNameBackColor": "#F3F3F9",
-            "hourFontFamily": "Tahoma,Verdana,Sans-serif",
-            "hourFontSize": "16pt",
-            "hourFontColor": "#42658C",
-            "selected": "",
-            "hashes": {
-                "callBack": "OV+dLKlTRpwauhSy/FtI1aLjgoc=",
-                "columns": "IhqLqz4fVg5t3JL4XXO3ZfZvJRA=",
-                "events": "NqagU2+lBsSSGcEgjzHvWAy3Rds=",
-                "colors": "3caslJYaCfbLdelD4+2YHVvrvn8=",
-                "hours": "K+iMpCQsduglOsYkdIUQZQMtaDM=",
-                "corner": "0XBQYL2rjFh+nn9As5pzf4+hWqg=",
-            },
-        },
-    }
 
     data = {
         "MIME Type": "application/x-www-form-urlencoded; charset=UTF-8",

@@ -5,7 +5,7 @@ room_validator = {
         "properties": {
             "name": {
                 "bsonType": "string",
-                "description": "must be a string and is required"
+                "description": "must be a string and is required",
             },
             "type": {
                 "bsonType": "string",
@@ -13,21 +13,12 @@ room_validator = {
             },
             "available": {
                 "bsonType": "bool",
-                "description": "must be a bool and is required"
+                "description": "must be a bool and is required",
             },
-            "capacity": {
-                "bsonType": "int",
-                "description": "must be an integer"
-            },
-            'level': {
-                "bsonType": "int",
-                "description": "must be an integer"
-            },
-            "building": {
-                "bsonType": "string",
-                "description": "must be a string"
-            },
-        }
+            "capacity": {"bsonType": "int", "description": "must be an integer"},
+            "level": {"bsonType": "int", "description": "must be an integer"},
+            "building": {"bsonType": "string", "description": "must be a string"},
+        },
     }
 }
 
@@ -38,7 +29,7 @@ teacher_validator = {
         "properties": {
             "name": {
                 "bsonType": "string",
-                "description": "must be a string and is required"
+                "description": "must be a string and is required",
             },
             "people_url": {
                 "bsonType": "string",
@@ -46,9 +37,9 @@ teacher_validator = {
             },
             "available": {
                 "bsonType": "bool",
-                "description": "must be a bool and is required"
-            }
-        }
+                "description": "must be a bool and is required",
+            },
+        },
     }
 }
 
@@ -59,7 +50,7 @@ course_validator = {
         "properties": {
             "name": {
                 "bsonType": "string",
-                "description": "must be a string and is required"
+                "description": "must be a string and is required",
             },
             "code": {
                 "bsonType": "string",
@@ -67,91 +58,92 @@ course_validator = {
             },
             "credits": {
                 "bsonType": "int",
-                "description": "must be an integer and is required"
+                "description": "must be an integer and is required",
             },
             "available": {
                 "bsonType": "bool",
-                "description": "must be a bool and is required"
+                "description": "must be a bool and is required",
             },
-            "edu_url": {
-                "bsonType": "string",
-                "description": "must be a string"
-            },
-            "language": {
-                "bsonType": "string",
-                "description": "must be a string"
-            },
+            "edu_url": {"bsonType": "string", "description": "must be a string"},
+            "language": {"bsonType": "string", "description": "must be a string"},
             "teachers": {
                 "bsonType": "array",
-                "description": "must be an array of objects"
-            }
-        }
+                "description": "must be an array of objects",
+            },
+        },
     }
 }
 
 course_schedule_validator = {
     "$jsonSchema": {
         "bsonType": "object",
-        "required": ["course_id", "start_datetime", "end_datetime", "available", "label"],
+        "required": [
+            "course_id",
+            "start_datetime",
+            "end_datetime",
+            "available",
+            "label",
+        ],
         "properties": {
             "course_id": {
                 "bsonType": "objectId",
-                "description": "must be an objectId and is required"
+                "description": "must be an objectId and is required",
             },
             "start_datetime": {
                 "bsonType": "date",
-                "description": "must be a date and is required"
+                "description": "must be a date and is required",
             },
             "end_datetime": {
                 "bsonType": "date",
-                "description": "must be a date and is required"
+                "description": "must be a date and is required",
             },
             "available": {
                 "bsonType": "bool",
-                "description": "must be a bool and is required"
+                "description": "must be a bool and is required",
             },
             "label": {
                 "bsonType": "string",
-                "description": "must be a string and is required"
+                "description": "must be a string and is required",
             },
-        }
+        },
     }
 }
 
 event_booking_validator = {
     "$jsonSchema": {
         "bsonType": "object",
-        "required": ["start_datetime", "end_datetime", "room_id", "available", "label", "name"],
+        "required": [
+            "start_datetime",
+            "end_datetime",
+            "room_id",
+            "available",
+            "label",
+            "name",
+        ],
         "properties": {
             "start_datetime": {
                 "bsonType": "date",
-                "description": "must be a date and is required"
+                "description": "must be a date and is required",
             },
             "end_datetime": {
                 "bsonType": "date",
-                "description": "must be a date and is required"
+                "description": "must be a date and is required",
             },
             "room_id": {
                 "bsonType": "objectId",
-                "description": "must be an objectId and is required"
+                "description": "must be an objectId and is required",
             },
             "available": {
                 "bsonType": "bool",
-                "description": "must be a bool and is required"
+                "description": "must be a bool and is required",
             },
             "label": {
                 "bsonType": "string",
-                "description": "must be a string and is required"
+                "description": "must be a string and is required",
             },
-            "description": {
-                "bsonType": "string",
-                "description": "must be a string"
-            },
-            "name": {
-                "bsonType": "string",
-                "description": "must be a string"
-            }
-        }
+            "description": {"bsonType": "string", "description": "must be a string"},
+            "name": {"bsonType": "string", "description": "must be a string"},
+        },
     }
 }
 
@@ -162,17 +154,17 @@ course_booking_validator = {
         "properties": {
             "schedule_id": {
                 "bsonType": "objectId",
-                "description": "must be an objectId and is required"
+                "description": "must be an objectId and is required",
             },
             "room_id": {
                 "bsonType": "objectId",
-                "description": "must be an objectId and is required"
+                "description": "must be an objectId and is required",
             },
             "available": {
                 "bsonType": "bool",
-                "description": "must be a bool and is required"
-            }
-        }
+                "description": "must be a bool and is required",
+            },
+        },
     }
 }
 
@@ -183,17 +175,17 @@ studyplan_validator = {
         "properties": {
             "unit_id": {
                 "bsonType": "objectId",
-                "description": "must be an objectId and is required"
+                "description": "must be an objectId and is required",
             },
             "semester_id": {
                 "bsonType": "objectId",
-                "description": "must be an objectId  and is required"
+                "description": "must be an objectId  and is required",
             },
             "available": {
                 "bsonType": "bool",
-                "description": "must be a bool and is required"
-            }
-        }
+                "description": "must be a bool and is required",
+            },
+        },
     }
 }
 
@@ -204,17 +196,17 @@ planned_in_validator = {
         "properties": {
             "studyplan_id": {
                 "bsonType": "objectId",
-                "description": "must be an objectId and is required"
+                "description": "must be an objectId and is required",
             },
             "course_id": {
                 "bsonType": "objectId",
-                "description": "must be an objectId and is required"
+                "description": "must be an objectId and is required",
             },
             "available": {
                 "bsonType": "bool",
-                "description": "must be a bool and is required"
-            }
-        }
+                "description": "must be a bool and is required",
+            },
+        },
     }
 }
 
@@ -225,29 +217,29 @@ semester_validator = {
         "properties": {
             "name": {
                 "bsonType": "string",
-                "description": "must be a string and is required"
+                "description": "must be a string and is required",
             },
             "type": {
                 "enum": ["fall", "spring", "year"],
-                "description": "must be a string and is required"
+                "description": "must be a string and is required",
             },
             "start_date": {
                 "bsonType": "date",
-                "description": "must be a date and is required"
+                "description": "must be a date and is required",
             },
             "end_date": {
                 "bsonType": "date",
-                "description": "must be a date and is required"
+                "description": "must be a date and is required",
             },
             "available": {
                 "bsonType": "bool",
-                "description": "must be a bool and is required"
+                "description": "must be a bool and is required",
             },
             "skip_dates": {
                 "bsonType": "array",
-                "description": "must be an array of dates"
-            }
-        }
+                "description": "must be an array of dates",
+            },
+        },
     }
 }
 
@@ -258,24 +250,18 @@ unit_validator = {
         "properties": {
             "name": {
                 "bsonType": "string",
-                "description": "must be a string and is required"
+                "description": "must be a string and is required",
             },
             "code": {
                 "bsonType": "string",
-                "description": "must be a string and is required"
+                "description": "must be a string and is required",
             },
-            "section": {
-                "bsonType": "string",
-                "description": "must be a string"
-            },
-            "promo": {
-                "bsonType": "string",
-                "description": "must be a string"
-            },
+            "section": {"bsonType": "string", "description": "must be a string"},
+            "promo": {"bsonType": "string", "description": "must be a string"},
             "available": {
                 "bsonType": "bool",
-                "description": "must be a bool and is required"
+                "description": "must be a bool and is required",
             },
-        }
+        },
     }
 }

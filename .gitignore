@@ -8,3 +8,5 @@ __pycache__
 *.html
 
 scrap_moodle.py
+.venv/
+.mypy_cache/

@@ -1,37 +1,40 @@
-from pymongo import MongoClient
-from config import *
-import utils
-from tqdm import tqdm
-from datetime import datetime
-import db_utils
-from bson.objectid import ObjectId
+import logging
 
-# Connect to MongoDB
-client = MongoClient(f"mongodb+srv://{DB_USER}:{DB_PASSWORD}@{DB_URL}/?retryWrites=true&w=majority")
-db = client[DB_NAME]
-# if connected, print success message
-try:
-    # The ismaster command is cheap and does not require auth.
-    client.admin.command('ismaster')
-    print("Connected to MongoDB")
-except ConnectionFailure:
-   print("Server not available")
-db_utils.init(db)
+from dotenv import load_dotenv
 
-# Get schedules from edu.epfl.ch for the current or next semester
-print("----- Get schedules -----")
-schedules = utils.find_courses_schedules(db)
+from db_utils import init_and_connect
+from settings import Settings
+from utils import (
+    create_courses_bookings,
+    create_rooms,
+    find_courses_schedules,
+    update_schedules,
+)
 
-# Create rooms in DB
-print("----- Create rooms -----")
-utils.create_rooms(db, schedules)
+load_dotenv()
 
-# Update schedules in DB
-print("----- Update schedules -----")
-utils.update_schedules(db, schedules)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Create bookings
-print("----- Create bookings -----")
-utils.create_courses_bookings(db, schedules=schedules)
 
-print("===== Done =====")
+def main() -> None:
+    settings = Settings()
+
+    db = init_and_connect(settings)
+    # Get schedules from edu.epfl.ch for the current or next semester
+    logger.info("Getting schedules...")
+    schedules = find_courses_schedules(db)
+
+    # Create rooms in DB
+    logger.info("Creating rooms...")
+    create_rooms(db, schedules)
+
+    # Update schedules in DB
+    logger.info("Updating schedules...")
+    update_schedules(db, schedules)
+
+    # Create bookings
+    logger.info("Creating bookings...")
+    create_courses_bookings(db, schedules=schedules)
+
+    logger.info("===== Done =====")
