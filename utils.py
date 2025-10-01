@@ -495,8 +495,6 @@ def create_studyplans(db, courses):
                 semester_type = MAP_SEMESTERS_LONG[semester_long]
 
             # Find semester in db
-            print("semester_type", semester_type)
-
             studyplan_semester = list(
                 filter(
                     lambda semester: semester_type == semester.get("type"),
@@ -504,7 +502,6 @@ def create_studyplans(db, courses):
                 )
             )
             if studyplan_semester is None or len(studyplan_semester) == 0:
-                print("studyplan_semester not found")
                 continue
 
             studyplan_semester = studyplan_semester[0]
@@ -521,7 +518,6 @@ def create_studyplans(db, courses):
 
             # If studyplan already exists, continue
             if found:
-                print("Studyplan already exists 1")
                 continue
 
             # Check if studyplan already exists in new_studyplans
@@ -536,7 +532,6 @@ def create_studyplans(db, courses):
 
             # If studyplan already exists, continue
             if found:
-                print("Studyplan already exists 2")
                 continue
 
             new_studyplans.append(
