@@ -1,6 +1,7 @@
 import logging
 from datetime import datetime
 
+import fire
 from dotenv import load_dotenv
 
 from db_utils import init_and_connect
@@ -119,3 +120,7 @@ def main() -> None:
     create_planned_in(db, unique_courses)
 
     logger.info("=== Done ===")
+
+
+if __name__ == "__main__":
+    fire.Fire(main)

@@ -1,5 +1,6 @@
 import logging
 
+import fire
 from dotenv import load_dotenv
 
 from db_utils import init_and_connect
@@ -38,3 +39,7 @@ def main() -> None:
     create_courses_bookings(db, schedules=schedules)
 
     logger.info("===== Done =====")
+
+
+if __name__ == "__main__":
+    fire.Fire(main)
