@@ -614,9 +614,9 @@ def create_planned_in(db, courses):
             )
 
             # Find unit in db
-            studyplan_unit = list(
+            studyplan_unit = next(
                 filter(lambda unit: unit["name"] == unit_name, db_units)
-            )[0]
+            )
             if studyplan_unit is None:
                 print("Unit not found")
                 continue

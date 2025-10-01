@@ -172,6 +172,12 @@ MAP_SECTIONS = {
     "Mineur en Ingénierie des Sciences du Vivant": "SV",
     "Architecture et sciences de la ville": "AR",
     "Energie": "EL",
+    "Systèmes urbains": "AR",
+    "Mineur en Statistique": "MA",
+    "Mineur en Microtechnique": "MT",
+    "Mineur en Construction durable": "SIE",
+    "Mineur en Sustainable Management and Technology": "MTE",
+    "Hors plans": "",
 }
 
 MAP_SEMESTERS = {
