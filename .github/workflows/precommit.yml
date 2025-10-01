@@ -23,6 +23,10 @@ jobs:
       - name: Install uv
         run: pip install uv
 
+      
+      - name: uv sync
+        run: uv sync
+
       - name: Type checking with ty
         run: uvx ty check .
 
