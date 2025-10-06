@@ -1,5 +1,4 @@
 import concurrent.futures
-import json
 import multiprocessing
 import os
 import re
@@ -8,6 +7,8 @@ from datetime import datetime, timedelta
 import numpy as np
 import requests
 from bs4 import BeautifulSoup
+from bson import ObjectId
+from pymongo.database import Database
 from pyproj import Transformer as pyproj_Transformer
 from tqdm import tqdm
 
@@ -17,6 +18,22 @@ from config import (
     MAP_SECTIONS,
     MAP_SEMESTERS_LONG,
     ROOMS_FILTER,
+)
+from entity_types import (
+    CourseBookingDocument,
+    CourseDocument,
+    CourseSchedule,
+    CourseScraped,
+    PlannedInDocument,
+    PlanRoom,
+    RoomDocument,
+    SemesterDocument,
+    SemesterType,
+    StudyPlanDocument,
+    StudyPlanScraped,
+    TeacherDocument,
+    TeacherScraped,
+    UnitDocument,
 )
 
 
@@ -90,7 +107,7 @@ def parse_credits(soup):
 
 
 ### PARSE COURSE ###
-def parse_course(url):
+def parse_course(url: str) -> CourseScraped | None:
     page = requests.get(url, timeout=(500, 500))
     if page.status_code == 404:
         print(f"404: {url}")
@@ -109,7 +126,7 @@ def parse_course(url):
     )
     credits = parse_credits(soup)
     teachers = [
-        (x.text, x.get("href"))
+        TeacherScraped(name=x.text, people_url=x.get("href"))
         for x in soup.find("div", class_="course-summary").findAll("p")[1].findAll("a")
     ]
     language = soup.find("div", class_="course-summary").findAll("p")
@@ -129,35 +146,32 @@ def parse_course(url):
     # studyplans_elements are buttons with section name before the xxxx-xxxx years and the semester after
     re_pattern = r"(\d{4}-\d{4})"
 
-    studyplans = []
+    studyplans: list[StudyPlanScraped] = []
     for studyplan_element in studyplans_elements:
-        studyplan = {}
         parts = re.split(re_pattern, studyplan_element.text)
-        studyplan["section"] = parts[0].strip().replace("\n", " ")
-        studyplan["semester"] = parts[1] + " " + parts[2].strip()
-        studyplans.append(studyplan)
+        section = parts[0].strip().replace("\n", " ")
+        semester = parts[1] + " " + parts[2].strip()
+        studyplans.append(StudyPlanScraped(section=section, semester=semester))
 
-    course = {
-        "name": title,
-        "code": code,
-        "credits": credits,
-        "studyplans": studyplans,
-        "teachers": teachers,
-        "edu_url": url,
-        "language": language,
-    }
-
-    return course
+    return CourseScraped(
+        name=title,
+        code=code,
+        credits=credits,
+        studyplans=studyplans,
+        teachers=teachers,
+        edu_url=url,
+        language=language,
+    )
 
 
 ### PARSE ALL COURSES ###
-def parse_all_courses():
+def parse_all_courses() -> list[CourseScraped]:
     URL_ROOT = "https://edu.epfl.ch"
     print("Getting all courses urls...")
     courses_url = get_all_courses_url()
     print(f"- {len(courses_url)} courses urls found")
 
-    courses = []
+    courses: list[CourseScraped] = []
     print("Parsing courses...")
 
     # Use ThreadPoolExecutor to parse courses concurrently
@@ -184,7 +198,7 @@ def parse_all_courses():
 
 
 ### FILTER DUPLICATES COURSES ###
-def filter_duplicates_courses(courses):
+def filter_duplicates_courses(courses: list[CourseScraped]) -> list[CourseScraped]:
     """
     Filter duplicates courses
     Input:
@@ -195,7 +209,7 @@ def filter_duplicates_courses(courses):
     filtered_courses = []
     course_codes = set()
     for course in courses:
-        course_code = course.get("code")
+        course_code = course.code
 
         if course_code not in course_codes:
             course_codes.add(course_code)
@@ -204,7 +218,7 @@ def filter_duplicates_courses(courses):
 
 
 ### CREATE COURSES ###
-def create_courses(db, courses):
+def create_courses(db, courses: list[CourseScraped]) -> None:
     """
     Create courses in the db
     Input:
@@ -213,25 +227,27 @@ def create_courses(db, courses):
         - None
     """
     print("Getting courses from DB...")
-    db_courses_codes = [course.get("code") for course in db.courses.find()]
+    db_courses_codes = [
+        CourseDocument.model_validate(course_doc).code
+        for course_doc in db.courses.find()
+    ]
     print(f"- {len(db_courses_codes)} courses found in DB")
 
     print("Filtering courses...")
     new_courses = []
     for course in tqdm(courses, total=len(courses)):
-        if course.get("code") in db_courses_codes:
+        if course.code in db_courses_codes:
             continue
-        new_course = {
-            "code": course.get("code"),
-            "name": course.get("name"),
-            "credits": course.get("credits"),
-            "edu_url": course.get("edu_url"),
-            "available": True,
-        }
-        if course.get("language") is not None:
-            new_course["language"] = course.get("language")
+        new_course = CourseDocument(
+            code=course.code,
+            name=course.name,
+            credits=course.credits,
+            edu_url=course.edu_url,
+            available=True,
+            language=course.language,
+        )
 
-        new_courses.append(new_course)
+        new_courses.append(new_course.model_dump(exclude_none=True))
 
     print("Creating courses...")
     if len(new_courses) == 0:
@@ -248,7 +264,7 @@ def create_courses(db, courses):
 
 
 ### CREATE TEACHERS ###
-def create_teachers(db, courses):
+def create_teachers(db: Database, courses: list[CourseScraped]) -> None:
     """
     Create teachers in the db
     Input:
@@ -258,29 +274,31 @@ def create_teachers(db, courses):
     """
 
     print("Getting teachers from DB...")
-    db_teachers = list(db.teachers.find({"available": True}))
+    db_teachers = [
+        TeacherDocument.model_validate(teacher_doc)
+        for teacher_doc in db.teachers.find({"available": True})
+    ]
     print(f"- {len(db_teachers)} teachers found")
 
+    existing_names = {teacher.name for teacher in db_teachers}
+
     print("Filtering teachers...")
-    new_teachers = []
+    new_teachers: list[TeacherDocument] = []
+    queued_names: set[str] = set()
     for course in tqdm(courses, total=len(courses)):
-        for teacher in course.get("teachers"):
-            teacher_name, teacher_url = teacher
+        for teacher in course.teachers:
+            teacher_name = teacher.name
 
-            # Skip teachers that already exist in the database
-            if any(
-                db_teacher.get("name") == teacher_name for db_teacher in db_teachers
-            ):
+            if teacher_name in existing_names or teacher_name in queued_names:
                 continue
 
-            # Skip teachers already queued for insertion
-            if any(
-                new_teacher.get("name") == teacher_name for new_teacher in new_teachers
-            ):
-                continue
-
+            queued_names.add(teacher_name)
             new_teachers.append(
-                {"name": teacher_name, "people_url": teacher_url, "available": True}
+                TeacherDocument(
+                    name=teacher_name,
+                    people_url=teacher.people_url,
+                    available=True,
+                )
             )
 
     print("Creating new teachers...")
@@ -289,7 +307,9 @@ def create_teachers(db, courses):
         return
 
     try:
-        db.teachers.insert_many(new_teachers)
+        db.teachers.insert_many(
+            [teacher.model_dump(exclude_none=True) for teacher in new_teachers]
+        )
         print(f"- {len(new_teachers)} teachers created")
     except Exception as e:
         print(e)
@@ -298,7 +318,7 @@ def create_teachers(db, courses):
 
 
 ### ADD TEACHERS TO COURSES ###
-def add_teachers_to_courses(db, courses):
+def add_teachers_to_courses(db: Database, courses: list[CourseScraped]) -> None:
     """
     Add teachers to courses in the db
     Input:
@@ -306,44 +326,51 @@ def add_teachers_to_courses(db, courses):
     Output:
         - None
     """
-    db_courses = list(db.courses.find({"available": True}))
+    db_courses = [
+        CourseDocument.model_validate(course_doc)
+        for course_doc in db.courses.find({"available": True})
+    ]
     print("Getting teachers from DB...")
-    db_teachers = list(db.teachers.find({"available": True}))
+    db_teachers = [
+        TeacherDocument.model_validate(teacher_doc)
+        for teacher_doc in db.teachers.find({"available": True})
+    ]
     print(f"- {len(db_teachers)} teachers found")
 
     print("Adding teachers to courses...")
     for course in tqdm(courses, total=len(courses)):
-        db_course = None
-        for db_course_ in db_courses:
-            if db_course_.get("code") == course.get("code"):
-                db_course = db_course_
-                break
+        db_course = next(
+            (item for item in db_courses if item.code == course.code), None
+        )
 
-        if db_course is None:
+        if db_course is None or db_course._id is None:
             continue
 
-        course_teachers_ids = []
+        course_teachers_ids: list[ObjectId] = []
 
-        for teacher in course.get("teachers"):
-            found = False
-            for db_teacher in db_teachers:
-                if db_teacher.get("people_url") == teacher[1]:
-                    found = True
-                    break
+        for teacher in course.teachers:
+            matching_teacher = next(
+                (
+                    db_teacher
+                    for db_teacher in db_teachers
+                    if db_teacher.people_url == teacher.people_url
+                ),
+                None,
+            )
 
-            if found:
-                course_teachers_ids.append(db_teacher.get("_id"))
-                continue
+            if matching_teacher and matching_teacher._id is not None:
+                course_teachers_ids.append(matching_teacher._id)
 
         db.courses.update_one(
-            {"_id": db_course.get("_id")}, {"$set": {"teachers": course_teachers_ids}}
+            {"_id": db_course._id},
+            {"$set": {"teachers": course_teachers_ids}},
         )
 
     return
 
 
 ### CREATE NEW SEMESTER ###
-def create_new_semester(db, **kwargs):
+def create_new_semester(db: Database, **kwargs):
     name = kwargs.get("name")
     if not name:
         raise ValueError("create_new_semester requires a non-empty 'name'")
@@ -367,29 +394,27 @@ def create_new_semester(db, **kwargs):
         print(f"Semester '{name}' already up-to-date")
 
 
-def list_units(courses):
-    units = []
-    unique_sections = set()
-    unique_promos = set()
-    for courses in courses:
-        for studyplan in courses["studyplans"]:
-            if studyplan["section"] not in unique_sections:
-                unique_sections.add(studyplan["section"])
-            if studyplan["semester"] not in unique_promos:
-                unique_promos.add(studyplan["semester"])
-            if (studyplan["section"], studyplan["semester"]) not in units:
-                units.append((studyplan["section"], studyplan["semester"]))
+def list_units(courses: list[CourseScraped]) -> list[tuple[str, str]]:
+    units: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for course in courses:
+        for studyplan in course.studyplans:
+            unit_key = (studyplan.section, studyplan.semester)
+            if unit_key in seen:
+                continue
+            seen.add(unit_key)
+            units.append(unit_key)
 
     return units
 
 
-def create_units(db, courses):
+def create_units(db: Database, courses: list[CourseScraped]) -> None:
     units = list_units(courses)
 
     print("Getting units from DB...")
-    db_units = list(db.units.find())
+    db_units = [UnitDocument.model_validate(unit_doc) for unit_doc in db.units.find()]
     print(f"- {len(db_units)} units found")
-    db_units_names = [unit.get("name") for unit in db_units]
+    db_units_names = [unit.name for unit in db_units]
 
     semester_re_pattern = r"(\d{4}-\d{4})"
 
@@ -404,29 +429,29 @@ def create_units(db, courses):
             else unit[0]
         )
         if unit_name not in db_units_names and unit_name not in new_units_names:
-            new_unit = dict()
             promo = (
                 MAP_PROMOS_LONG[semester_long]
                 if semester_long in MAP_PROMOS_LONG
                 else None
             )
-            if promo is not None:
-                new_unit["promo"] = promo
             if unit[0] not in MAP_SECTIONS:
                 print("Section not found in MAP_SECTIONS", unit[0])
                 continue
             code = (
-                MAP_SECTIONS[unit[0]] + "-" + promo
+                f"{MAP_SECTIONS[unit[0]]}-{promo}"
                 if promo is not None
                 else MAP_SECTIONS[unit[0]]
             )
-            new_unit["code"] = code
-            new_unit["section"] = MAP_SECTIONS[unit[0]]
-            new_unit["name"] = unit_name
-            new_unit["available"] = True
+            new_unit_doc = UnitDocument(
+                name=unit_name,
+                code=code,
+                section=MAP_SECTIONS[unit[0]],
+                promo=promo,
+                available=True,
+            )
 
             new_units_names.add(unit_name)
-            new_units.append(new_unit)
+            new_units.append(new_unit_doc.model_dump(exclude_none=True))
 
     print("Creating new units...")
     if len(new_units) == 0:
@@ -442,9 +467,12 @@ def create_units(db, courses):
     return
 
 
-def create_studyplans(db, courses):
+def create_studyplans(db: Database, courses: list[CourseScraped]) -> None:
     print("Getting studyplans from DB...")
-    db_studyplans = list(db.studyplans.find({"available": True}))
+    db_studyplans = [
+        StudyPlanDocument.model_validate(plan_doc)
+        for plan_doc in db.studyplans.find({"available": True})
+    ]
     print(f"- {len(db_studyplans)} studyplans found")
 
     # Find current or next semester for each semester type (fall, spring, year)
@@ -452,15 +480,17 @@ def create_studyplans(db, courses):
     db_semester_spring = get_current_or_next_semester(db, "spring")
     db_semester_year = get_current_or_next_semester(db, "year")
 
-    db_semesters = list(
-        filter(
-            lambda x: x is not None,
-            [db_semester_fall, db_semester_spring, db_semester_year],
-        )
-    )
+    db_semesters = [
+        semester
+        for semester in [db_semester_fall, db_semester_spring, db_semester_year]
+        if semester is not None
+    ]
     print(len(list(db_semesters)), "db semesters found")
 
-    db_units = list(db.units.find({"available": True}))
+    db_units = [
+        UnitDocument.model_validate(unit_doc)
+        for unit_doc in db.units.find({"available": True})
+    ]
 
     print(db_semesters)
 
@@ -468,50 +498,47 @@ def create_studyplans(db, courses):
     semester_re_pattern = r"(\d{4}-\d{4})"
     print("Filtering studyplans...")
     for course in courses:
-        for studyplan in course["studyplans"]:
-            semester_long = re.split(semester_re_pattern, studyplan["semester"])[
-                2
-            ].strip()
+        for studyplan in course.studyplans:
+            semester_long = re.split(semester_re_pattern, studyplan.semester)[2].strip()
             unit_name = (
-                studyplan["section"] + " - " + semester_long
+                studyplan.section + " - " + semester_long
                 if semester_long in MAP_PROMOS_LONG
-                else studyplan["section"]
+                else studyplan.section
             )
 
             # Find unit in db
-            studyplan_unit = list(
-                filter(lambda unit: unit["name"] == unit_name, db_units)
+            studyplan_unit = next(
+                (unit for unit in db_units if unit.name == unit_name), None
             )
-            if studyplan_unit is None or len(studyplan_unit) == 0:
+            if studyplan_unit is None:
                 print("Unit not found", unit_name)
                 continue
-            studyplan_unit = studyplan_unit[0]
 
             # Map semester name to semester type
             semester_type = None
             if semester_long not in MAP_SEMESTERS_LONG:
-                semester_type = MAP_SEMESTERS_LONG[studyplan["section"]]
+                semester_type = MAP_SEMESTERS_LONG[studyplan.section]
             else:
                 semester_type = MAP_SEMESTERS_LONG[semester_long]
 
             # Find semester in db
-            studyplan_semester = list(
-                filter(
-                    lambda semester: semester_type == semester.get("type"),
-                    db_semesters,
-                )
+            studyplan_semester = next(
+                (
+                    semester
+                    for semester in db_semesters
+                    if semester_type == semester.type
+                ),
+                None,
             )
-            if studyplan_semester is None or len(studyplan_semester) == 0:
+            if studyplan_semester is None:
                 continue
-
-            studyplan_semester = studyplan_semester[0]
 
             # Check if studyplan already exists in db
             found = False
             for db_plan in db_studyplans:
                 if (
-                    db_plan["unit_id"] == studyplan_unit["_id"]
-                    and db_plan["semester_id"] == studyplan_semester["_id"]
+                    db_plan.unit_id == studyplan_unit._id
+                    and db_plan.semester_id == studyplan_semester._id
                 ):
                     found = True
                     break
@@ -524,8 +551,8 @@ def create_studyplans(db, courses):
             found = False
             for new_plan in new_studyplans:
                 if (
-                    new_plan["unit_id"] == studyplan_unit["_id"]
-                    and new_plan["semester_id"] == studyplan_semester["_id"]
+                    new_plan["unit_id"] == studyplan_unit._id
+                    and new_plan["semester_id"] == studyplan_semester._id
                 ):
                     found = True
                     break
@@ -534,13 +561,16 @@ def create_studyplans(db, courses):
             if found:
                 continue
 
-            new_studyplans.append(
-                {
-                    "unit_id": studyplan_unit["_id"],
-                    "semester_id": studyplan_semester["_id"],
-                    "available": True,
-                }
+            if studyplan_unit._id is None or studyplan_semester._id is None:
+                continue
+
+            new_plan_doc = StudyPlanDocument(
+                unit_id=studyplan_unit._id,
+                semester_id=studyplan_semester._id,
+                available=True,
             )
+
+            new_studyplans.append(new_plan_doc.model_dump())
 
     print("Creating studyplans...")
     if len(new_studyplans) == 0:
@@ -558,126 +588,141 @@ def create_studyplans(db, courses):
     return
 
 
-def create_planned_in(db, courses):
-    db_courses = list(db.courses.find({"available": True}))
+def create_planned_in(db: Database, courses: list[CourseScraped]) -> None:
+    db_courses = [
+        CourseDocument.model_validate(course_doc)
+        for course_doc in db.courses.find({"available": True})
+    ]
 
-    db_units = list(db.units.find({"available": True}))
+    db_units = [
+        UnitDocument.model_validate(unit_doc)
+        for unit_doc in db.units.find({"available": True})
+    ]
 
     db_semester_fall = get_current_or_next_semester(db, "fall")
     db_semester_spring = get_current_or_next_semester(db, "spring")
     db_semester_year = get_current_or_next_semester(db, "year")
 
-    db_semesters = list(
-        filter(
-            lambda x: x is not None,
-            [db_semester_fall, db_semester_spring, db_semester_year],
-        )
-    )
+    db_semesters = [
+        semester
+        for semester in [db_semester_fall, db_semester_spring, db_semester_year]
+        if semester is not None
+    ]
 
     print("Getting studyplans from DB...")
-    db_studyplans = list(
-        db.studyplans.find(
+    db_studyplans = [
+        StudyPlanDocument.model_validate(plan_doc)
+        for plan_doc in db.studyplans.find(
             {
                 "available": True,
-                "semester_id": {"$in": [semester["_id"] for semester in db_semesters]},
-            }
-        )
-    )
-    print(f"- {len(db_studyplans)} studyplans found")
-
-    print("Getting planned_in from DB...")
-    db_planned_in = list(
-        db.planned_in.find(
-            {
-                "available": True,
-                "studyplan_id": {
-                    "$in": [studyplan["_id"] for studyplan in db_studyplans]
+                "semester_id": {
+                    "$in": [
+                        semester._id
+                        for semester in db_semesters
+                        if semester is not None and semester._id is not None
+                    ]
                 },
             }
         )
-    )
+    ]
+    print(f"- {len(db_studyplans)} studyplans found")
+
+    print("Getting planned_in from DB...")
+    db_planned_in = [
+        PlannedInDocument.model_validate(planned_doc)
+        for planned_doc in db.planned_in.find(
+            {
+                "available": True,
+                "studyplan_id": {
+                    "$in": [plan._id for plan in db_studyplans if plan._id is not None]
+                },
+            }
+        )
+    ]
     print(f"- {len(db_planned_in)} planned_in found")
 
     semester_re_pattern = r"(\d{4}-\d{4})"
-    new_planned_ins = []
+    new_planned_ins: list[dict] = []
     print("Filtering planned_in...")
     for course in tqdm(courses, total=len(courses)):
-        db_course = list(
-            filter(lambda db_course: db_course["code"] == course["code"], db_courses)
-        )[0]
-        if db_course is None:
+        db_course = next(
+            (item for item in db_courses if item.code == course.code), None
+        )
+        if db_course is None or db_course._id is None:
             continue
 
-        course_studyplans_ids = set()
+        course_studyplans_ids: set[ObjectId] = set()
 
-        for studyplan in course["studyplans"]:
-            semester_long = re.split(semester_re_pattern, studyplan["semester"])[
-                2
-            ].strip()
+        for studyplan in course.studyplans:
+            semester_long = re.split(semester_re_pattern, studyplan.semester)[2].strip()
             unit_name = (
-                studyplan["section"] + " - " + semester_long
+                studyplan.section + " - " + semester_long
                 if semester_long in MAP_PROMOS_LONG
-                else studyplan["section"]
+                else studyplan.section
             )
 
-            # Find unit in db
             studyplan_unit = next(
-                filter(lambda unit: unit["name"] == unit_name, db_units)
+                (unit for unit in db_units if unit.name == unit_name),
+                None,
             )
-            if studyplan_unit is None:
-                print("Unit not found")
+            if studyplan_unit is None or studyplan_unit._id is None:
+                print("Unit not found", unit_name)
                 continue
 
-            # Map semester name to semester type
             if semester_long not in MAP_SEMESTERS_LONG:
-                semester_type = MAP_SEMESTERS_LONG[studyplan["section"]]
+                semester_type = MAP_SEMESTERS_LONG[studyplan.section]
             else:
                 semester_type = MAP_SEMESTERS_LONG[semester_long]
 
-            # Find semester in db
-            studyplan_semester_db = list(
-                filter(
-                    lambda semester: semester_type == semester.get("type"), db_semesters
-                )
+            studyplan_semester_db = next(
+                (
+                    semester
+                    for semester in db_semesters
+                    if semester.type == semester_type
+                ),
+                None,
             )
-            if studyplan_semester_db is None or len(studyplan_semester_db) == 0:
+            if studyplan_semester_db is None or studyplan_semester_db._id is None:
                 continue
-            studyplan_semester_db = studyplan_semester_db[0]
 
-            # Find studyplan in db
-            studyplan_db = list(
-                filter(
-                    lambda plan: plan["unit_id"] == studyplan_unit["_id"]
-                    and plan["semester_id"] == studyplan_semester_db["_id"],
-                    db_studyplans,
-                )
+            studyplan_db = next(
+                (
+                    plan
+                    for plan in db_studyplans
+                    if plan.unit_id == studyplan_unit._id
+                    and plan.semester_id == studyplan_semester_db._id
+                ),
+                None,
             )
-            if studyplan_db is None or len(studyplan_db) == 0:
-                print("Studyplan not found")
+            if studyplan_db is None or studyplan_db._id is None:
                 continue
-            studyplan_db = studyplan_db[0]
 
-            # Find planned_in in db
-            planned_in_db = list(
-                filter(
-                    lambda planned_in: planned_in["course_id"] == db_course["_id"]
-                    and planned_in["studyplan_id"] == studyplan_db["_id"],
-                    db_planned_in,
-                )
+            course_studyplans_ids.add(studyplan_db._id)
+
+        for studyplan_id in course_studyplans_ids:
+            already_exists = any(
+                planned.course_id == db_course._id
+                and planned.studyplan_id == studyplan_id
+                for planned in db_planned_in
+            )
+            if already_exists:
+                continue
+
+            already_queued = any(
+                new_planned["course_id"] == db_course._id
+                and new_planned["studyplan_id"] == studyplan_id
+                for new_planned in new_planned_ins
+            )
+            if already_queued:
+                continue
+
+            new_planned_doc = PlannedInDocument(
+                course_id=db_course._id,
+                studyplan_id=studyplan_id,
+                available=True,
             )
 
-            if studyplan_db["_id"] in course_studyplans_ids:
-                continue
-            course_studyplans_ids.add(studyplan_db["_id"])
-
-            if planned_in_db is None or len(planned_in_db) == 0:
-                new_planned_ins.append(
-                    {
-                        "course_id": db_course["_id"],
-                        "studyplan_id": studyplan_db["_id"],
-                        "available": True,
-                    }
-                )
+            new_planned_ins.append(new_planned_doc.model_dump())
 
     print("Creating planned_in...")
     if len(new_planned_ins) == 0:
@@ -692,19 +737,25 @@ def create_planned_in(db, courses):
     return
 
 
-def get_current_or_next_semester(db, semester_type=None):
+def get_current_or_next_semester(
+    db, semester_type: SemesterType | None = None
+) -> SemesterDocument | None:
     today = datetime.today()
 
     # If semester_type is specified, get the current or next semester of this type
     if semester_type is not None:
-        semester = db.semesters.find_one(
+        semester_doc = db.semesters.find_one(
             {"end_date": {"$gte": today}, "type": semester_type}, sort=[("end_date", 1)]
         )
 
-        return semester
+        return (
+            SemesterDocument.model_validate(semester_doc)
+            if semester_doc is not None
+            else None
+        )
 
     # Get the current semester
-    semester = db.semesters.find_one(
+    semester_doc = db.semesters.find_one(
         {
             "start_date": {"$lte": today},
             "end_date": {"$gte": today},
@@ -713,42 +764,56 @@ def get_current_or_next_semester(db, semester_type=None):
     )
 
     # If no current semester is found, get the first next semester
-    if not semester:
-        semester = db.semesters.find_one(
+    if not semester_doc:
+        semester_doc = db.semesters.find_one(
             {"start_date": {"$gte": today}, "type": {"$ne": "year"}},
             sort=[("start_date", 1)],
         )
 
-    return semester
+    return (
+        SemesterDocument.model_validate(semester_doc)
+        if semester_doc is not None
+        else None
+    )
 
 
-def find_semester_courses_ids(db, semester):
-    if semester is None:
-        return
+def find_semester_courses_ids(db, semester: SemesterDocument | None) -> list[ObjectId]:
+    if semester is None or semester._id is None:
+        return []
 
     print("Getting studyplans from DB...")
-    filtered_studyplans = list(
-        db.studyplans.find({"available": True, "semester_id": semester["_id"]})
-    )
-    filtered_studyplans_ids = [studyplan["_id"] for studyplan in filtered_studyplans]
+    filtered_studyplans = [
+        StudyPlanDocument.model_validate(plan_doc)
+        for plan_doc in db.studyplans.find(
+            {"available": True, "semester_id": semester._id}
+        )
+    ]
+    filtered_studyplans_ids = [
+        studyplan._id for studyplan in filtered_studyplans if studyplan._id is not None
+    ]
     print(f"- {len(filtered_studyplans_ids)} studyplans found")
 
-    planned_in = list(
-        db.planned_in.find(
+    planned_in = [
+        PlannedInDocument.model_validate(planned_doc)
+        for planned_doc in db.planned_in.find(
             {"available": True, "studyplan_id": {"$in": filtered_studyplans_ids}}
         )
-    )
-    semester_courses_ids = [planned["course_id"] for planned in planned_in]
+    ]
+    semester_courses_ids = [planned.course_id for planned in planned_in]
 
     return semester_courses_ids
 
 
 ### PARSE COURSE SCHEDULE ###
-def get_course_schedule(url):
+def get_course_schedule(
+    url: str,
+) -> (
+    tuple[list[CourseScheduleSlot] | list[CourseScheduleEventBase] | None, bool] | None
+):
     page = requests.get(url)
     if page.status_code == 404:
         print(url)
-        return
+        return None
 
     soup = BeautifulSoup(page.content, "html.parser")
 
@@ -768,33 +833,31 @@ def get_course_schedule(url):
 
 
 ### PARSE SCHEDULE DOCTORAL SCHOOL ###
-def parse_schedule_EDOC(soup):
+def parse_schedule_EDOC(soup) -> list[CourseScheduleScraped] | None:
     # Ecole doctorale
-    schedule = dict()
-
     iframe_soup = BeautifulSoup(
         requests.get(soup.find("iframe").attrs["src"]).content, "html.parser"
     )
     if iframe_soup.find("table") is None:
-        # print(f'\033[91m SKIP (no schedule) \033[0m')
         return None
 
     rows = iframe_soup.findAll("tr")
-    creneaux = []
+    creneaux: list[CourseScheduleScraped] = []
+    current_date: datetime | None = None
 
     for i, row in enumerate(rows):
         if i == 0:
             continue
-        date: datetime | None = None
         if row.find("th") is not None:
-            # find a dd.mm.yyyy date
             date_str = re.findall(r"\d{2}.\d{2}.\d{4}", row.find("th").text)
             if len(date_str) > 0:
-                date = datetime.strptime(date_str[0], "%d.%m.%Y")
-        elif (
+                current_date = datetime.strptime(date_str[0], "%d.%m.%Y")
+            continue
+
+        if (
             row.get("class") is not None
             and "grisleger" in row.get("class")
-            and date is not None
+            and current_date is not None
         ):
             time = [x.split(":")[0] for x in row.findAll("td")[0].text.split("-")]
 
@@ -803,7 +866,7 @@ def parse_schedule_EDOC(soup):
 
             rooms_found = [room.text for room in row.findAll("td")[1].findAll("a")]
 
-            rooms = []
+            rooms: list[str] = []
             for room in rooms_found:
                 if room in MAP_ROOMS:
                     if isinstance(MAP_ROOMS[room], list):
@@ -819,49 +882,49 @@ def parse_schedule_EDOC(soup):
                 label = "exercice"
             elif label == "P":
                 label = "projet"
-            else:
-                print(label)
 
-            # create datetime object from date string dd.mm.yyyy and time string hh
-            start_datetime = date.replace(
+            start_datetime = current_date.replace(
                 hour=start_hour, minute=0, second=0, microsecond=0
             )
-            creneau = {
-                "start_datetime": start_datetime,
-                "end_datetime": start_datetime + timedelta(hours=duration),
-                "label": label,
-                "rooms": rooms,
-            }
-            if len(rooms) > 0:
-                creneaux.append(creneau)
-            creneau = {}
+            event = CourseScheduleScraped(
+                start_datetime=start_datetime,
+                end_datetime=start_datetime + timedelta(hours=duration),
+                label=label,
+                rooms=rooms,
+            )
+            if rooms:
+                creneaux.append(event)
 
     if len(creneaux) == 0:
-        # print(f'\033[91m SKIP (no creneaux) \033[0m')
         return None
 
-    schedule = []
+    schedule: list[CourseScheduleScraped] = []
     for creneau in creneaux:
-        found = False
-        for i, s in enumerate(schedule):
-            if (
-                s["start_datetime"] == creneau["start_datetime"]
-                and s["end_datetime"] == creneau["end_datetime"]
-                and s["label"] == creneau["label"]
-            ):
-                schedule[i]["rooms"] = schedule[i]["rooms"] + creneau["rooms"]
-                found = True
-                break
-        if not found:
+        existing = next(
+            (
+                s
+                for s in schedule
+                if s.start_datetime == creneau.start_datetime
+                and s.end_datetime == creneau.end_datetime
+                and s.label == creneau.label
+            ),
+            None,
+        )
+        if existing is not None:
+            existing.rooms = existing.rooms + creneau.rooms
+        else:
             schedule.append(creneau)
 
     return schedule
 
 
-def parse_schedule(soup):
-    creneaux = soup.find("div", class_="coursebook-week-caption sr-only").findAll("p")
+def parse_schedule(soup: BeautifulSoup) -> list[CourseScheduleScraped]:
+    coursebook = soup.find("div", class_="coursebook-week-caption sr-only")
+    if coursebook is None:
+        return []
+    creneaux = coursebook.findAll("p")
 
-    schedule = []
+    schedule: list[CourseScheduleScraped] = []
     for creneau in creneaux:
         # Extracting the full text from the paragraph
         full_text = creneau.get_text().replace("\xa0", " ")
@@ -883,12 +946,11 @@ def parse_schedule(soup):
         # Extracting start hour and duration
         time_match = re.search(r"(\d{1,2}h) - (\d{1,2}h)", full_text)
         start_hour, end_hour = time_match.groups() if time_match else (None, None)
-        duration = (
-            int(end_hour[:-1]) - int(start_hour[:-1])
-            if start_hour and end_hour
-            else None
-        )
-        start_hour = int(start_hour[:-1]) if start_hour else None
+        if not start_hour or not end_hour:
+            continue
+
+        duration = int(end_hour[:-1]) - int(start_hour[:-1])
+        start_hour_int = int(start_hour[:-1])
 
         # Extracting label
         first_room = creneau.find("a")
@@ -909,70 +971,68 @@ def parse_schedule(soup):
         rooms = []
         for room in rooms_found:
             if room in MAP_ROOMS:
-                if isinstance(MAP_ROOMS[room], list):
-                    rooms += [x for x in MAP_ROOMS[room]]
+                mapped_room = MAP_ROOMS[room]
+                if isinstance(mapped_room, list):
+                    rooms.extend(mapped_room)
                 else:
-                    rooms.append(MAP_ROOMS[room])
+                    rooms.append(mapped_room)
             elif room not in ROOMS_FILTER:
                 rooms.append(room)
 
         schedule.append(
-            {
-                "day": day,
-                "start_hour": start_hour,
-                "duration": duration,
-                "label": label,
-                "rooms": rooms,
-            }
+            CourseScheduleSlot(
+                day=day,
+                start_hour=start_hour_int,
+                duration=duration,
+                label=label,
+                rooms=rooms,
+            )
         )
 
     return schedule
 
 
-def create_semester_schedule(schedule, db_semester):
-    start_date = db_semester.get("start_date")
-    end_date = db_semester.get("end_date")
-    skip_dates = db_semester.get("skip_dates")
-    if skip_dates is None:
-        skip_dates = []
+def create_semester_schedule(
+    schedule: list[CourseScheduleSlot], db_semester: SemesterDocument
+) -> list[CourseScheduleEventBase]:
+    start_date = db_semester.start_date
+    end_date = db_semester.end_date
+    skip_dates = db_semester.skip_dates or []
 
-    semester_schedule = []
+    semester_schedule: list[CourseScheduleEventBase] = []
 
-    # Iterate through each day of the semester
     current_date = start_date
     while current_date <= end_date:
         if current_date not in skip_dates:
-            # Add each event in the schedule to this day
             for event in schedule:
-                if event["day"] != current_date.weekday():
+                if event.day != current_date.weekday():
                     continue
 
-                # Parse start hour
-                start_hour = datetime.strptime(str(event["start_hour"]), "%H").time()
-                start_datetime = datetime.combine(current_date, start_hour)
+                start_datetime = datetime.combine(
+                    current_date, datetime.min.time()
+                ) + timedelta(hours=event.start_hour)
+                end_datetime = start_datetime + timedelta(hours=event.duration)
 
-                # Calculate end datetime based on duration
-                duration_hours = int(event["duration"])
-                end_datetime = start_datetime + timedelta(hours=duration_hours)
-
-                # Create a new event entry for the semester schedule
-                event_entry = {
-                    "start_datetime": start_datetime,
-                    "end_datetime": end_datetime,
-                    "label": event["label"],
-                    "rooms": event["rooms"],
-                }
+                event_entry = CourseScheduleEventBase(
+                    start_datetime=start_datetime,
+                    end_datetime=end_datetime,
+                    label=event.label,
+                    rooms=event.rooms,
+                )
 
                 semester_schedule.append(event_entry)
 
-        # Move to the next day
         current_date += timedelta(days=1)
 
     return semester_schedule
 
 
-def process_course_schedules(course, db_courses_semester_codes, semester):
-    course_edu_url = course.get("edu_url")
+def process_course_schedules(
+    course: CourseDocument,
+    db_courses_semester_codes: set[str],
+    semester: SemesterDocument | None,
+) -> list[CourseSchedule] | None:
+    course_edu_url = course.edu_url
     if course_edu_url is None:
         return None
 
@@ -986,22 +1046,32 @@ def process_course_schedules(course, db_courses_semester_codes, semester):
         return None
 
     if edoc is False:
-        if course.get("code") not in db_courses_semester_codes:
+        if course.code not in db_courses_semester_codes or semester is None:
             return None
         schedule = create_semester_schedule(schedule, semester)
 
-    # Add course_id to schedule
-    for event in schedule:
-        event["course_id"] = course["_id"]
+    if course._id is None:
+        return None
 
-    return schedule
+    events_with_course = [
+        CourseSchedule(
+            course_id=course._id,
+            start_datetime=event.start_datetime,
+            end_datetime=event.end_datetime,
+            label=event.label,
+            rooms=event.rooms,
+        )
+        for event in schedule
+    ]
+
+    return events_with_course
 
 
 def process_course_schedules_start(args):
     return process_course_schedules(*args)
 
 
-def find_courses_schedules(db):
+def find_courses_schedules(db: Database) -> list[CourseSchedule]:
     semester = get_current_or_next_semester(db)
     semester_courses_ids = find_semester_courses_ids(db, semester)
 
@@ -1010,11 +1080,15 @@ def find_courses_schedules(db):
     current_year_courses_ids = find_semester_courses_ids(db, current_year)
 
     print("Getting courses from DB...")
-    db_courses_semester = list(db.courses.find({"_id": {"$in": semester_courses_ids}}))
-    db_courses_semester_codes = [course.get("code") for course in db_courses_semester]
+    db_courses_semester = [
+        CourseDocument.model_validate(course_doc)
+        for course_doc in db.courses.find({"_id": {"$in": semester_courses_ids}})
+    ]
+    db_courses_semester_codes = {course.code for course in db_courses_semester}
 
-    db_courses_year = list(
-        db.courses.find(
+    db_courses_year = [
+        CourseDocument.model_validate(course_doc)
+        for course_doc in db.courses.find(
             {
                 "_id": {
                     "$in": list(
@@ -1023,12 +1097,12 @@ def find_courses_schedules(db):
                 }
             }
         )
-    )
+    ]
     db_courses = db_courses_semester + db_courses_year
 
     print(f"- {len(db_courses)} courses found")
 
-    schedules = []
+    schedules: list[CourseSchedule] = []
     num_processes = multiprocessing.cpu_count()
     with multiprocessing.Pool(num_processes) as pool:
         processed_schedules = tqdm(
@@ -1051,13 +1125,14 @@ def find_courses_schedules(db):
 
 
 ### LIST ALL ROOMS ###
-def list_rooms(schedules):
-    rooms = []
+def list_rooms(
+    schedules: list[CourseScheduleEvent | CourseScheduleEventBase],
+) -> list[str]:
+    rooms: list[str] = []
     for schedule in schedules:
-        if schedule.get("rooms") is None:
+        schedule_rooms = schedule.rooms
+        if schedule_rooms is None:
             continue
-
-        schedule_rooms = schedule.get("rooms")
 
         for room in schedule_rooms:
             if room not in rooms:
@@ -1130,7 +1205,7 @@ def list_plan_rooms():
 
         return transformer.transform(center_x, center_y)
 
-    def parse_room(room_xml):
+    def parse_room(room_xml, level):
         """
         Parse a XML room object
         Input:
@@ -1157,13 +1232,14 @@ def list_plan_rooms():
         room_coordinates_string = room_xml.find("gml:posList").text
         room_coordinates = compute_coordinates(room_coordinates_string)
 
-        return {
-            "name": room_name,
-            "type": room_type,
-            "coordinates": room_coordinates,
-            "link": room_link,
-            "capacity": room_capacity,
-        }
+        return PlanRoom(
+            name=room_name,
+            type=room_type,
+            coordinates=room_coordinates,
+            link=room_link,
+            capacity=room_capacity,
+            level=level,
+        )
 
     def parse_all_rooms(rooms_xml):
         """
@@ -1173,19 +1249,21 @@ def list_plan_rooms():
         Output:
             - rooms: a list of parsed rooms objects (name, type)
         """
-        rooms_parsed = []
+        rooms_parsed: list[PlanRoom] = []
+        seen_names: set[str] = set()
         for level, level_rooms_xml in tqdm(
             rooms_xml.items(), total=len(rooms_xml.keys())
         ):
             for room_xml in tqdm(
                 level_rooms_xml, total=len(level_rooms_xml), leave=False
             ):
-                room = parse_room(room_xml)
+                room = parse_room(room_xml, level)
                 if room is None:
                     continue
-                if room not in rooms_parsed:
-                    room["level"] = level
-                    rooms_parsed.append(room)
+                if room.name in seen_names:
+                    continue
+                seen_names.add(room.name)
+                rooms_parsed.append(room)
         return rooms_parsed
 
     rooms_xml = list_all_levels_rooms()
@@ -1197,133 +1275,116 @@ def list_plan_rooms():
 
 
 ### CREATE ROOMS ###
-def create_rooms(db, schedules=[], rooms_names=[], update=False):
-    """
-    Create schedules in the database
-    Input:
-        - db: the database
-        - schedules: a list of schedules
-    """
+
+
+def create_rooms(
+    db,
+    schedules: list[CourseScheduleEvent | CourseScheduleEventBase] | None = None,
+    rooms_names: list[str] | None = None,
+    update: bool = False,
+) -> None:
+    """Create or update rooms in the database based on schedules or explicit names."""
 
     if update:
         rooms_names = []
-
-    elif len(rooms_names) == 0 or not isinstance(rooms_names, list):
-        if len(schedules) == 0 or not isinstance(schedules, list):
+    elif not rooms_names:
+        if not schedules:
             print("No schedules to create")
             return
-
-        # List all rooms in the schedules
         rooms_names = list_rooms(schedules)
 
-    # Find all rooms on plan.epfl.ch
+    if rooms_names is None:
+        rooms_names = []
+
     print("Getting rooms from plan.epfl.ch")
     plan_rooms = list_plan_rooms()
-    plan_rooms_names = [plan_room.get("name") for plan_room in plan_rooms]
+    plan_rooms_names = [plan_room.name for plan_room in plan_rooms]
     print(f"Found {len(plan_rooms_names)} rooms on plan.epfl.ch")
 
-    # List all rooms in the database
     print("Getting rooms from database")
-    db_rooms = list(db.rooms.find({"available": True}))
+    db_rooms = [
+        RoomDocument.model_validate(room_doc)
+        for room_doc in db.rooms.find({"available": True})
+    ]
     print(f"Found {len(db_rooms)} rooms in database")
 
-    # Update the rooms type, coordinates and link in the database if necessary
     print("Updating rooms in database")
     for db_room in tqdm(db_rooms):
-        db_room_name = db_room.get("name")
-        if db_room_name not in plan_rooms_names:
-            # If the room is not on plan.epfl.ch, ignore it
-            print(f"Room {db_room_name} not found on plan.epfl.ch")
+        if db_room.name not in plan_rooms_names:
+            print(f"Room {db_room.name} not found on plan.epfl.ch")
             continue
-        db_room_type = db_room.get("type")
-        db_room_capacity = db_room.get("capacity")
-        db_room_level = db_room.get("level", None)
-        db_room_link = db_room.get("link")
-        db_room_coordinates = db_room.get("coordinates")
 
-        # Find the room in plan data
-        plan_room = [
-            plan_room
-            for plan_room in plan_rooms
-            if plan_room.get("name") == db_room_name
-        ][0]
-        plan_room_type = plan_room.get("type")
-        plan_room_link = plan_room.get("link")
-        plan_room_coordinates = plan_room.get("coordinates")
-        plan_room_capacity = plan_room.get("capacity")
-        plan_room_level = plan_room.get("level", None)
+        plan_room = next(
+            (room for room in plan_rooms if room.name == db_room.name),
+            None,
+        )
+        if plan_room is None:
+            continue
 
-        # Update it if necessary
-        if (
-            db_room_type != plan_room_type
-            or db_room_link != plan_room_link
-            or db_room_coordinates != plan_room_coordinates
-            or db_room_capacity != plan_room_capacity
-            or (db_room_level != plan_room_level and plan_room_level)
-        ):
-            updated_room = {
-                "name": db_room_name,
-                "type": plan_room_type,
-                "link": plan_room_link,
-                "coordinates": plan_room_coordinates,
-            }
+        requires_update = (
+            db_room.type != plan_room.type
+            or db_room.link != plan_room.link
+            or db_room.coordinates != plan_room.coordinates
+            or db_room.capacity != plan_room.capacity
+            or db_room.level != plan_room.level
+        )
 
-            if plan_room_capacity is not None and isinstance(plan_room_capacity, int):
-                updated_room["capacity"] = plan_room_capacity
+        if not requires_update:
+            continue
 
-            if plan_room_level is not None and isinstance(plan_room_level, int):
-                updated_room["level"] = plan_room_level
+        update_payload = {
+            "type": plan_room.type,
+            "link": plan_room.link,
+            "coordinates": plan_room.coordinates,
+        }
+        if plan_room.capacity is not None:
+            update_payload["capacity"] = plan_room.capacity
+        if plan_room.level is not None:
+            update_payload["level"] = plan_room.level
 
-            db.rooms.update_one({"name": db_room_name}, {"$set": updated_room})
+        db.rooms.update_one({"name": db_room.name}, {"$set": update_payload})
 
-    # List rooms to create
-    db_rooms_names = [db_room.get("name") for db_room in db_rooms]
+    db_rooms_names = [room.name for room in db_rooms]
     new_rooms_names = [
         room_name for room_name in rooms_names if room_name not in db_rooms_names
     ]
 
-    # Create the rooms that are not in the database
     print("Filtering rooms to create")
-    new_rooms = []
+    new_rooms: list[dict] = []
     for room_name in tqdm(new_rooms_names):
-        plan_room = [
-            plan_room for plan_room in plan_rooms if plan_room.get("name") == room_name
-        ]
+        plan_room = next(
+            (room for room in plan_rooms if room.name == room_name),
+            None,
+        )
 
+        room_type = "unknown"
         room_link = None
         room_coordinates = None
-        room_type = "unknown"
-        room_capacity = 0
-        room_level = 0
+        room_capacity = None
+        room_level = None
 
-        # building is the characters before the first number
         room_building = re.split(r"\d", room_name)[0]
-        # replace underscores or hyphens with spaces
         room_building = re.sub(r"[-_]", " ", room_building)
 
-        if plan_room is not None and len(plan_room) != 0:
-            room_type = plan_room[0].get("type", "unknown")
-            room_link = plan_room[0].get("link", None)
-            room_coordinates = plan_room[0].get("coordinates", None)
-            room_capacity = plan_room[0].get("capacity", None)
-            room_level = plan_room[0].get("level", None)
+        if plan_room is not None:
+            room_type = plan_room.type or "unknown"
+            room_link = plan_room.link
+            room_coordinates = plan_room.coordinates
+            room_capacity = plan_room.capacity
+            room_level = plan_room.level
 
-        new_room = {
-            "name": room_name,
-            "type": room_type,
-            "available": True,
-            "link": room_link,
-            "coordinates": room_coordinates,
-            "building": room_building,
-        }
+        new_room_doc = RoomDocument(
+            name=room_name,
+            type=room_type,
+            available=True,
+            link=room_link,
+            coordinates=room_coordinates,
+            building=room_building.strip() or None,
+            capacity=room_capacity,
+            level=room_level,
+        )
 
-        if room_capacity is not None and isinstance(room_capacity, int):
-            new_room["capacity"] = room_capacity
-
-        if room_level is not None and isinstance(room_level, int):
-            new_room["level"] = room_level
-
-        new_rooms.append(new_room)
+        new_rooms.append(new_room_doc.model_dump(exclude_none=True))
 
     if len(new_rooms) == 0:
         print("No new rooms to create")
@@ -1338,368 +1399,287 @@ def create_rooms(db, schedules=[], rooms_names=[], update=False):
     return
 
 
-def update_schedules(db, schedules):
+def update_schedules(db, schedules: list[CourseScheduleEvent]) -> None:
     db_semester = get_current_or_next_semester(db)
     db_year_semester = get_current_or_next_semester(db, "year")
 
-    # Find studyplans in the current semester
-    db_studyplans = list(
-        db.studyplans.find(
+    if (
+        db_semester is None
+        or db_semester._id is None
+        or db_year_semester is None
+        or db_year_semester._id is None
+    ):
+        print("Missing semester information, skipping schedule update")
+        return
+
+    db_studyplans = [
+        StudyPlanDocument.model_validate(plan_doc)
+        for plan_doc in db.studyplans.find(
             {
                 "available": True,
-                "semester_id": {"$in": [db_semester["_id"], db_year_semester["_id"]]},
+                "semester_id": {"$in": [db_semester._id, db_year_semester._id]},
             }
         )
-    )
+    ]
 
-    # Find planned_in in the current semester
-    db_planned_in = list(
-        db.planned_in.find(
+    db_planned_in = [
+        PlannedInDocument.model_validate(planned_doc)
+        for planned_doc in db.planned_in.find(
             {
                 "available": True,
                 "studyplan_id": {
-                    "$in": [studyplan["_id"] for studyplan in db_studyplans]
+                    "$in": [plan._id for plan in db_studyplans if plan._id is not None]
                 },
             }
         )
-    )
-
-    # remove MAN courses from db_planned_in
-    man_courses_ids = get_man_courses_ids(db)
-    db_planned_in_ids = [planned_in["course_id"] for planned_in in db_planned_in]
-    db_planned_in_ids = [
-        course_id for course_id in db_planned_in_ids if course_id not in man_courses_ids
     ]
 
-    # Find schedules with course in the studyplans
+    man_courses_ids = set(get_man_courses_ids(db))
+    db_planned_in_ids = [
+        planned.course_id
+        for planned in db_planned_in
+        if planned.course_id not in man_courses_ids
+    ]
+
     print("Getting schedules from DB...")
-    db_schedules = list(
-        db.course_schedules.find(
-            {
-                "course_id": {
-                    "$in": db_planned_in_ids,
-                }
-            }
+    db_schedules = [
+        CourseScheduleDocument.model_validate(schedule_doc)
+        for schedule_doc in db.course_schedules.find(
+            {"course_id": {"$in": db_planned_in_ids}}
         )
-    )
+    ]
     print(f"- {len(db_schedules)} schedules found")
 
-    incoming_schedules = schedules.copy()
+    existing_index = {
+        (
+            schedule.course_id,
+            schedule.start_datetime,
+            schedule.end_datetime,
+            schedule.label,
+        ): schedule
+        for schedule in db_schedules
+    }
 
-    db_schedules_to_remake_available = []
+    schedules_to_remake_available: list[CourseScheduleDocument] = []
+    new_schedules_payload: list[dict] = []
 
-    print(f"Filtering {len(incoming_schedules)} schedules...")
-    new_schedules = []
-    for incoming_schedule in tqdm(incoming_schedules, total=len(incoming_schedules)):
-        found = False
-        db_schedule_found = None
-        for db_schedule in db_schedules:
-            if (
-                db_schedule.get("course_id") == incoming_schedule.get("course_id")
-                and db_schedule.get("start_datetime")
-                == incoming_schedule.get("start_datetime")
-                and db_schedule.get("end_datetime")
-                == incoming_schedule.get("end_datetime")
-                and db_schedule.get("label") == incoming_schedule.get("label")
-            ):
-                db_schedule_found = db_schedule
-                found = True
-                db_schedules.remove(db_schedule)
-                break
+    print(f"Filtering {len(schedules)} schedules...")
+    for incoming_schedule in tqdm(schedules, total=len(schedules)):
+        key = (
+            incoming_schedule.course_id,
+            incoming_schedule.start_datetime,
+            incoming_schedule.end_datetime,
+            incoming_schedule.label,
+        )
+        existing = existing_index.pop(key, None)
 
-        if found and db_schedule_found is not None:
-            if not db_schedule_found.get("available"):
-                db_schedules_to_remake_available.append(db_schedule_found)
+        if existing is not None:
+            if not existing.available:
+                schedules_to_remake_available.append(existing)
             continue
 
-        new_schedules.append(
-            {
-                "course_id": incoming_schedule.get("course_id"),
-                "start_datetime": incoming_schedule.get("start_datetime"),
-                "end_datetime": incoming_schedule.get("end_datetime"),
-                "label": incoming_schedule.get("label"),
-                "available": True,
-            }
+        new_schedule_doc = CourseScheduleDocument(
+            course_id=incoming_schedule.course_id,
+            start_datetime=incoming_schedule.start_datetime,
+            end_datetime=incoming_schedule.end_datetime,
+            label=incoming_schedule.label,
+            available=True,
         )
+        new_schedules_payload.append(new_schedule_doc.model_dump())
 
-    # delete remaining db_schedules
+    schedules_to_disable_ids = [
+        schedule._id for schedule in existing_index.values() if schedule._id is not None
+    ]
+
     print("Deleting schedules not in incoming schedules...")
-    try:
-        db.course_schedules.update_many(
-            {"_id": {"$in": [db_schedule.get("_id") for db_schedule in db_schedules]}},
-            {"$set": {"available": False}},
-        )
-        print(f"- {len(db_schedules)} schedules deleted")
-    except Exception as e:
-        print(e)
+    if schedules_to_disable_ids:
+        try:
+            db.course_schedules.update_many(
+                {"_id": {"$in": schedules_to_disable_ids}},
+                {"$set": {"available": False}},
+            )
+            print(f"- {len(schedules_to_disable_ids)} schedules deleted")
+        except Exception as e:
+            print(e)
+    else:
+        print("- No schedules to delete")
 
-    # remake available schedules
+    remake_ids = [
+        schedule._id
+        for schedule in schedules_to_remake_available
+        if schedule._id is not None
+    ]
     print("Remaking available schedules...")
-    try:
-        db.course_schedules.update_many(
-            {
-                "_id": {
-                    "$in": [
-                        db_schedule.get("_id")
-                        for db_schedule in db_schedules_to_remake_available
-                    ]
-                }
-            },
-            {"$set": {"available": True}},
-        )
-        print(f"- {len(db_schedules_to_remake_available)} schedules remade available")
-    except Exception as e:
-        print(e)
+    if remake_ids:
+        try:
+            db.course_schedules.update_many(
+                {"_id": {"$in": remake_ids}},
+                {"$set": {"available": True}},
+            )
+            print(f"- {len(remake_ids)} schedules remade available")
+        except Exception as e:
+            print(e)
+    else:
+        print("- No schedules to remake available")
 
-    # insert new schedules
-    if len(new_schedules) == 0:
+    if len(new_schedules_payload) == 0:
         print("No new schedules to create")
         return
 
     try:
-        print(f"Creating {len(new_schedules)} new schedules...")
-        db.course_schedules.insert_many(new_schedules)
-        print(f"- {len(new_schedules)} schedules created")
+        print(f"Creating {len(new_schedules_payload)} new schedules...")
+        db.course_schedules.insert_many(new_schedules_payload)
+        print(f"- {len(new_schedules_payload)} schedules created")
     except Exception as e:
         print(e)
 
 
-def get_man_courses_ids(db):
+def get_man_courses_ids(db) -> list[ObjectId]:
     semester = get_current_or_next_semester(db, "spring")
+    if semester is None or semester._id is None:
+        return []
 
-    man_units = list(db.units.find({"section": "MAN"}))
+    man_units = [
+        UnitDocument.model_validate(unit_doc)
+        for unit_doc in db.units.find({"section": "MAN"})
+    ]
+    man_unit_ids = [unit._id for unit in man_units if unit._id is not None]
+    if not man_unit_ids:
+        return []
 
-    man_studyplans = list(
-        db.studyplans.find(
-            {
-                "unit_id": {
-                    "$in": [unit["_id"] for unit in man_units],
-                },
-                "semester_id": semester["_id"],
-            }
+    man_studyplans = [
+        StudyPlanDocument.model_validate(plan_doc)
+        for plan_doc in db.studyplans.find(
+            {"unit_id": {"$in": man_unit_ids}, "semester_id": semester._id}
         )
-    )
+    ]
+    man_studyplan_ids = [plan._id for plan in man_studyplans if plan._id is not None]
+    if not man_studyplan_ids:
+        return []
 
-    man_planned_in = list(
-        db.planned_in.find(
-            {
-                "studyplan_id": {
-                    "$in": [studyplan["_id"] for studyplan in man_studyplans]
-                }
-            }
+    man_planned_in = [
+        PlannedInDocument.model_validate(planned_doc)
+        for planned_doc in db.planned_in.find(
+            {"studyplan_id": {"$in": man_studyplan_ids}}
         )
-    )
+    ]
 
-    return list(set([planned["course_id"] for planned in man_planned_in]))
+    return list({planned.course_id for planned in man_planned_in})
 
 
-def create_courses_bookings(db, schedules):
-    db_rooms = list(db.rooms.find({"available": True}))
+def create_courses_bookings(db, schedules: list[CourseScheduleEvent]) -> None:
+    db_rooms = [
+        RoomDocument.model_validate(room_doc)
+        for room_doc in db.rooms.find({"available": True})
+    ]
+    room_by_name = {room.name: room for room in db_rooms if room.name}
 
-    db_schedules = list(db.course_schedules.find({"available": True}))
+    db_schedules = [
+        CourseScheduleDocument.model_validate(schedule_doc)
+        for schedule_doc in db.course_schedules.find({"available": True})
+    ]
+    schedule_by_key = {
+        (
+            schedule.course_id,
+            schedule.start_datetime,
+            schedule.end_datetime,
+            schedule.label,
+        ): schedule
+        for schedule in db_schedules
+    }
 
     print("Getting DB bookings...")
-    db_bookings = list(db.course_bookings.find({"available": True}))
-
-    db_unavailable_bookings = list(db.course_bookings.find({"available": False}))
+    db_bookings = [
+        CourseBookingDocument.model_validate(booking_doc)
+        for booking_doc in db.course_bookings.find({"available": True})
+    ]
     print(f"- {len(db_bookings)} bookings found in DB")
 
-    print("Filtering bookings....")
-    new_bookings_candidates = []
-    bookings_to_remove = []
-    for schedule in tqdm(schedules, total=len(schedules)):
-        db_schedule = None
-        for db_item in db_schedules:
-            if (
-                db_item.get("course_id") == schedule.get("course_id")
-                and db_item.get("start_datetime") == schedule.get("start_datetime")
-                and db_item.get("end_datetime") == schedule.get("end_datetime")
-                and db_item.get("label") == schedule.get("label")
-            ):
-                db_schedule = db_item
-                break
+    bookings_by_schedule: dict[ObjectId, list[CourseBookingDocument]] = {}
+    existing_pairs: set[tuple[ObjectId, ObjectId]] = set()
+    for booking in db_bookings:
+        bookings_by_schedule.setdefault(booking.schedule_id, []).append(booking)
+        existing_pairs.add((booking.schedule_id, booking.room_id))
 
-        if db_schedule is None:
+    bookings_to_remove_ids: list[ObjectId] = []
+    new_bookings_candidates: list[dict] = []
+
+    print("Filtering bookings....")
+    for schedule in tqdm(schedules, total=len(schedules)):
+        key = (
+            schedule.course_id,
+            schedule.start_datetime,
+            schedule.end_datetime,
+            schedule.label,
+        )
+        db_schedule = schedule_by_key.get(key)
+        if db_schedule is None or db_schedule._id is None:
             continue
 
         schedule_rooms = []
-        for room in schedule["rooms"]:
-            db_room = list(filter(lambda db_room: db_room["name"] == room, db_rooms))
+        for room_name in schedule.rooms:
+            room = room_by_name.get(room_name)
+            if room is not None and room._id is not None:
+                schedule_rooms.append(room)
 
-            if db_room is None or len(db_room) == 0:
+        existing_bookings = bookings_by_schedule.get(db_schedule._id, [])
+        for booking in existing_bookings:
+            if not any(room._id == booking.room_id for room in schedule_rooms):
+                bookings_to_remove_ids.append(booking._id)
+
+        for room in schedule_rooms:
+            pair = (db_schedule._id, room._id)
+            if pair in existing_pairs:
                 continue
-            db_room = db_room[0]
 
-            schedule_rooms.append(db_room)
-
-        # check for rooms in db_rooms not in schedule['rooms'] (to remove)
-        db_schedule_bookings = list(
-            filter(
-                lambda db_booking: db_booking.get("schedule_id") == db_schedule["_id"],
-                db_bookings,
+            new_booking = CourseBookingDocument(
+                schedule_id=db_schedule._id,
+                room_id=room._id,
+                available=True,
             )
-        )
-        for db_schedule_booking in db_schedule_bookings:
-            room_id = db_schedule_booking.get("room_id")
-            found = False
-            for db_room in schedule_rooms:
-                if room_id == db_room["_id"]:
-                    found = True
-                    break
-
-            if not found:
-                bookings_to_remove.append(db_schedule_booking)
-
-        for db_room in schedule_rooms:
-            # Check if booking already exists
-            found = False
-            for db_booking in db_bookings:
-                if (
-                    db_booking.get("schedule_id") == db_schedule["_id"]
-                    and db_booking.get("room_id") == db_room["_id"]
-                ):
-                    found = True
-
-                    break
-
-            if found:
-                continue
-
-            booking = {
-                "schedule_id": db_schedule["_id"],
-                "room_id": db_room["_id"],
-                "available": True,
-            }
-
-            new_bookings_candidates.append(booking)
+            new_bookings_candidates.append(new_booking.model_dump())
+            existing_pairs.add(pair)
 
     print(
-        f" - {len(bookings_to_remove)} bookings changed (not the schedule) (to remove)"
+        f" - {len(bookings_to_remove_ids)} bookings changed (not the schedule) (to remove)"
     )
 
-    # remove bookings with a schedule_id not in db_schedules
-    print("Removing bookings without schedule...")
-    try:
-        # find bookings without a schedule_id in db_schedules
-        bookings_without_schedule = []
-        schedules_ids = [schedule["_id"] for schedule in db_schedules]
-        for booking in tqdm(db_bookings, total=len(db_bookings)):
-            if booking.get("schedule_id") not in schedules_ids:
-                bookings_without_schedule.append(booking)
+    valid_schedule_ids = {
+        schedule._id for schedule in db_schedules if schedule._id is not None
+    }
+    bookings_without_schedule_ids = [
+        booking._id
+        for booking in db_bookings
+        if booking.schedule_id not in valid_schedule_ids
+    ]
 
-        if len(bookings_without_schedule) == 0 and len(bookings_to_remove) == 0:
-            print("- No bookings to remove")
-        else:
+    all_bookings_to_disable = [
+        booking_id
+        for booking_id in bookings_without_schedule_ids + bookings_to_remove_ids
+        if booking_id is not None
+    ]
+
+    print("Removing bookings without schedule...")
+    if all_bookings_to_disable:
+        try:
             db.course_bookings.update_many(
-                {
-                    "_id": {
-                        "$in": [
-                            booking.get("_id")
-                            for booking in bookings_without_schedule
-                            + bookings_to_remove
-                        ]
-                    }
-                },
+                {"_id": {"$in": all_bookings_to_disable}},
                 {"$set": {"available": False}},
             )
-            print(
-                f"- {len(bookings_without_schedule + bookings_to_remove)} bookings removed"
-            )
-
-    except Exception as e:
-        print(e)
-
-    # check if new booking is in db_unavailable_bookings and set it to available
-    print("Checking if new bookings are in unavailable bookings...")
-    to_make_available = []
-    to_create = []
-    for new_booking in tqdm(
-        new_bookings_candidates, total=len(new_bookings_candidates)
-    ):
-        found = False
-        for unavailable_booking in db_unavailable_bookings:
-            if new_booking.get("schedule_id") == unavailable_booking.get(
-                "schedule_id"
-            ) and new_booking.get("room_id") == unavailable_booking.get("room_id"):
-                found = True
-                to_make_available.append(unavailable_booking)
-                break
-
-        if not found:
-            to_create.append(new_booking)
-
-    if len(to_make_available) == 0:
-        print("- No bookings to (re)make available")
+        except Exception as e:
+            print(e)
     else:
-        db.course_bookings.update_many(
-            {"_id": {"$in": [booking.get("_id") for booking in to_make_available]}},
-            {"$set": {"available": True}},
-        )
-        print(f"- {len(to_make_available)} bookings (re)made available")
+        print("- No bookings to remove")
 
-    if len(to_create) == 0:
-        print("No bookings to create")
+    if len(new_bookings_candidates) == 0:
+        print("No new bookings to create")
         return
 
-    # insert new bookings
     try:
-        print(f"Creating {len(to_create)} new bookings...")
-        db.course_bookings.insert_many(to_create)
-        print(f"- {len(to_create)} bookings created")
+        db.course_bookings.insert_many(new_bookings_candidates)
+        print(f"- {len(new_bookings_candidates)} bookings created")
     except Exception as e:
         print(e)
-
-
-### MEETINGS ###
-
-
-def query_force(query, max_retry=50):
-    for _ in range(max_retry):
-        response = query()
-        if not response:
-            continue
-        if response.status_code == 200:
-            return response
-    return None
-
-
-def parse_events(response):
-    if not response or not response.text:
-        print("No response")
-        return []
-
-    events_line = response.text.split("0|")[1]
-
-    print(response.text)
-
-    if not events_line:
-        print("No events line")
-        return []
-
-    # Do a little bit of parsing
-    room_occupancy = (
-        events_line.replace(";", "")
-        .replace('\\"', "")
-        .replace("<br>", "")
-        .replace("ISA - ", "")
-        .replace("\\", "")
-    )
-
-    parsed_room_occupancy = json.loads(room_occupancy)["Events"]
-
-    events_tags = ["Evénements", "Réservation académique", "Réservation ponctuelle"]
-
-    # Filter events based on the specified tags
-    filtered_events = [
-        event for event in parsed_room_occupancy if event["Text"] in events_tags
-    ]
-
-    # Keep only the relevant fields
-    filtered_events = [
-        {k: event[k] for k in ["Text", "Start", "End"]} for event in filtered_events
-    ]
-
-    return filtered_events
 
 
 def parse_room_events(room_name, start_date, end_date):

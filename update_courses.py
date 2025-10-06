@@ -5,6 +5,7 @@ import fire
 from dotenv import load_dotenv
 
 from db_utils import init_and_connect
+from entity_types import CourseScraped
 from settings import Settings
 from utils import (
     add_teachers_to_courses,
@@ -32,11 +33,11 @@ def main() -> None:
 
     # Parse all courses from edu.epfl.ch
     logger.info("Parsing all courses...")
-    courses = parse_all_courses()
+    courses: list[CourseScraped] = parse_all_courses()
 
     # Filter duplicates
     logger.info("Filtering duplicates...")
-    unique_courses = filter_duplicates_courses(courses)
+    unique_courses: list[CourseScraped] = filter_duplicates_courses(courses)
 
     # Create courses in DB
     logger.info("Creating courses...")

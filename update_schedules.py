@@ -24,7 +24,7 @@ def main() -> None:
     db = init_and_connect(settings)
     # Get schedules from edu.epfl.ch for the current or next semester
     logger.info("Getting schedules...")
-    schedules = find_courses_schedules(db)
+    schedules: list[CourseSchedule] = find_courses_schedules(db)
 
     # Create rooms in DB
     logger.info("Creating rooms...")
